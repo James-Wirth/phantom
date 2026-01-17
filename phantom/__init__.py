@@ -31,6 +31,7 @@ from typing import Any, TypeVar
 from ._ref import Ref
 from ._registry import (
     clear,
+    get_openai_tools,
     get_operation,
     get_operation_signature,
     get_ref,
@@ -48,12 +49,14 @@ __all__ = [
     "op",
     # Functions
     "ref",
+    "ref_from_tool_call",
     "resolve",
     "get",
     # Registry
     "list_operations",
     "list_refs",
     "get_operation_signature",
+    "get_openai_tools",
     "clear",
 ]
 
@@ -99,3 +102,32 @@ def get(ref_id: str) -> Ref[Any]:
         ref = phantom.get("@a3f2")
     """
     return get_ref(ref_id)
+
+
+def ref_from_tool_call(op_name: str, arguments: dict[str, Any]) -> Ref[Any]:
+    """
+    Create a ref from an LLM tool call, auto-resolving ref ID strings.
+
+    This is the recommended way to handle tool calls from LLMs. It automatically
+    converts any string argument starting with "@" into the corresponding Ref.
+
+    Args:
+        op_name: Name of the operation (from tool call)
+        arguments: Arguments dict (from tool call), may contain "@ref_id" strings
+
+    Returns:
+        A new Ref for this operation
+
+    Example:
+        # LLM returns: {"name": "filter", "arguments": {"data": "@a3f2", "col": "x"}}
+        ref = phantom.ref_from_tool_call("filter", {"data": "@a3f2", "col": "x"})
+        # "@a3f2" is automatically resolved to the actual Ref
+    """
+    resolved_args: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if isinstance(value, str) and value.startswith("@"):
+            resolved_args[key] = get_ref(value)
+        else:
+            resolved_args[key] = value
+
+    return ref(op_name, **resolved_args)
