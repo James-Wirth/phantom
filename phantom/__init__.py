@@ -28,6 +28,7 @@ Example:
 
 from typing import Any, TypeVar
 
+from ._inspect import inspector, peek
 from ._ref import Ref
 from ._registry import (
     clear,
@@ -47,10 +48,12 @@ __all__ = [
     "Ref",
     # Decorators
     "op",
+    "inspector",
     # Functions
     "ref",
     "ref_from_tool_call",
     "resolve",
+    "peek",
     "get",
     # Registry
     "list_operations",
