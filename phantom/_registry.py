@@ -98,3 +98,70 @@ def list_refs() -> list[Ref[Any]]:
 def clear() -> None:
     """Clear all refs (useful for testing)."""
     _refs.clear()
+
+
+def _python_type_to_json_schema(type_name: str) -> str:
+    """Map Python type names to JSON Schema types."""
+    mapping = {
+        "str": "string",
+        "int": "integer",
+        "float": "number",
+        "bool": "boolean",
+        "list": "array",
+        "dict": "object",
+        "None": "null",
+        "NoneType": "null",
+    }
+    return mapping.get(type_name, "string")
+
+
+def get_openai_tools() -> list[dict[str, Any]]:
+    """
+    Generate OpenAI-compatible tool definitions for all registered operations.
+
+    Returns a list ready to pass to the OpenAI API's `tools` parameter.
+
+    Example:
+        @phantom.op
+        def search(query: str, limit: int = 10) -> list[dict]:
+            '''Search for items matching query.'''
+            ...
+
+        tools = phantom.get_openai_tools()
+        response = openai.chat.completions.create(
+            model="gpt-4",
+            messages=messages,
+            tools=tools,
+        )
+    """
+    tools = []
+    for op_name in list_operations():
+        sig = get_operation_signature(op_name)
+
+        properties = {}
+        required = []
+
+        for param_name, param_info in sig["params"].items():
+            prop: dict[str, Any] = {
+                "type": _python_type_to_json_schema(param_info.get("type", "str")),
+                "description": f"The {param_name} parameter",
+            }
+            properties[param_name] = prop
+
+            if "default" not in param_info:
+                required.append(param_name)
+
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": sig["name"],
+                "description": sig["doc"] or f"Execute the {sig['name']} operation",
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            },
+        })
+
+    return tools
