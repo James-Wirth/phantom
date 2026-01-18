@@ -41,6 +41,7 @@ from ._registry import (
     list_refs,
     op,
     register_ref,
+    validate_args,
 )
 from ._resolve import aresolve, resolve
 from ._result import ToolResult
@@ -72,6 +73,7 @@ __all__ = [
     "list_refs",
     "get_operation_signature",
     "get_tools",
+    "validate_args",
     "clear",
     # Serialization
     "serialize_graph",

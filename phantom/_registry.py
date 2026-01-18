@@ -74,7 +74,7 @@ def get_operation_signature(name: str) -> dict[str, Any]:
         param_info: dict[str, Any] = {}
         if param_name in hints:
             type_hint = hints[param_name]
-            param_info["type_hint"] = type_hint  # Preserve full type hint
+            param_info["type_hint"] = type_hint 
             if hasattr(type_hint, "__name__"):
                 param_info["type"] = type_hint.__name__
             else:
@@ -96,6 +96,57 @@ def get_operation_signature(name: str) -> dict[str, Any]:
         "params": params,
         "return_type": return_type,
     }
+
+
+def validate_args(op_name: str, args: dict[str, Any]) -> list[str]:
+    """
+    Validate arguments against an operation's signature.
+
+    Returns a list of warnings (not errors) for issues like:
+    - Missing required parameters
+    - Unknown parameters
+    - Basic type mismatches
+
+    This is advisory - it doesn't block ref creation, just warns.
+
+    Args:
+        op_name: Name of the registered operation
+        args: Arguments dict to validate
+
+    Returns:
+        List of warning messages (empty if all OK)
+    """
+    warnings = []
+    sig = get_operation_signature(op_name)
+    params = sig["params"]
+
+    for param_name, param_info in params.items():
+        if "default" not in param_info and param_name not in args:
+            warnings.append(f"Missing required parameter: '{param_name}'")
+
+    for arg_name in args:
+        if arg_name not in params:
+            warnings.append(f"Unknown parameter: '{arg_name}'")
+
+    for arg_name, arg_value in args.items():
+        if arg_name not in params:
+            continue
+        param_info = params[arg_name]
+        if param_info.get("is_ref"):
+            if not isinstance(arg_value, Ref):
+                warnings.append(
+                    f"Parameter '{arg_name}' expects a Ref, got {type(arg_value).__name__}"
+                )
+        else:
+            expected_type = param_info.get("type", "")
+            actual_type = type(arg_value).__name__
+            if expected_type in ("str", "int", "float", "bool") and actual_type != expected_type:
+                if actual_type != "str":
+                    warnings.append(
+                        f"Parameter '{arg_name}' expects {expected_type}, got {actual_type}"
+                    )
+
+    return warnings
 
 
 def register_ref(ref: Ref[T]) -> Ref[T]:

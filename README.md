@@ -37,9 +37,14 @@ The LLM doesn't need to see 10,000 rows of data to answer this. It needs to know
 
 **Step 1: LLM loads datasets and receives opaque refs**
 ```python
-load_csv("orders.csv")     → {"ref": "@a3f2"}
-load_csv("customers.csv")  → {"ref": "@b4c3"}
-load_csv("products.csv")   → {"ref": "@c5d6"}
+load_csv("orders.csv")
+  → {"ref": "@a3f2", "op": "load_csv", "args": {"path": "orders.csv"}}
+
+load_csv("customers.csv")
+  → {"ref": "@b4c3", "op": "load_csv", "args": {"path": "customers.csv"}}
+
+load_csv("products.csv")
+  → {"ref": "@c5d6", "op": "load_csv", "args": {"path": "products.csv"}}
 ```
 
 **Step 2: LLM peeks at structure (not the full data)**
@@ -55,11 +60,17 @@ peek("@a3f2") → {
 
 **Step 3: LLM builds the pipeline using refs**
 ```python
-merge("@a3f2", "@c5d6", on="product_id")                              → {"ref": "@d7e8"}
-merge("@d7e8", "@b4c3", on="customer_id")                             → {"ref": "@e9f0"}
-assign("@e9f0", column="profit", expr="quantity * (price - cost)")    → {"ref": "@f1a2"}
-groupby_agg("@f1a2", by=["segment", "region"], agg={"profit": "sum"}) → {"ref": "@g3b4"}
-sort_values("@g3b4", by="profit", ascending=False)                    → {"ref": "@h5c6"}
+merge("@a3f2", "@c5d6", on="product_id")
+  → {"ref": "@d7e8", "op": "merge", "args": {"left": "@a3f2", "right": "@c5d6", "on": "product_id"}}
+
+merge("@d7e8", "@b4c3", on="customer_id")
+  → {"ref": "@e9f0", "op": "merge", "args": {"left": "@d7e8", "right": "@b4c3", "on": "customer_id"}}
+
+groupby_agg("@e9f0", by=["segment", "region"], agg={"profit": "sum"})
+  → {"ref": "@g3b4", "op": "groupby_agg", "args": {...}}
+
+sort_values("@g3b4", by="profit", ascending=False)
+  → {"ref": "@h5c6", "op": "sort_values", "args": {...}}
 ```
 
 **Step 4: Your code resolves the final ref into actual data**
@@ -110,7 +121,7 @@ import openai
 import phantom
 
 client = openai.OpenAI()
-tools = phantom.get_tools(format="openai")  
+tools = phantom.get_tools()  # or format="anthropic" for Claude  
 
 messages = [{"role": "user", "content": "What's our most profitable segment by region?"}]
 

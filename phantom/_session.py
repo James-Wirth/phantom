@@ -5,8 +5,9 @@ from __future__ import annotations
 import uuid
 from typing import Any, TypeVar
 
+from ._errors import ResolutionError
 from ._ref import Ref
-from ._registry import get_operation
+from ._registry import get_operation, get_operation_signature
 from ._resolve import aresolve as _aresolve
 from ._resolve import resolve as _resolve
 from ._result import ToolResult
@@ -78,7 +79,13 @@ class Session:
             KeyError: If ref not found in this session
         """
         if ref_id not in self._refs:
-            raise KeyError(f"Unknown ref in session {self.id}: {ref_id}")
+            valid = list(self._refs.keys())[:5]
+            if valid:
+                raise KeyError(
+                    f"Unknown ref '{ref_id}' in session. Valid refs: {valid}"
+                )
+            else:
+                raise KeyError(f"Unknown ref '{ref_id}' in session (no refs exist)")
         return self._refs[ref_id]
 
     def resolve(self, ref: Ref[Any] | str) -> Any:
@@ -121,27 +128,61 @@ class Session:
         """Clear all refs from this session."""
         self._refs.clear()
 
-    def ref_from_tool_call(self, op_name: str, arguments: dict[str, Any]) -> Ref[Any]:
+    def ref_from_tool_call(
+        self, op_name: str, arguments: dict[str, Any], *, coerce_types: bool = True
+    ) -> Ref[Any]:
         """
         Create a ref from an LLM tool call, auto-resolving ref ID strings.
 
         Args:
             op_name: Name of the operation (from tool call)
             arguments: Arguments dict, may contain "@ref_id" strings
+            coerce_types: If True, coerce string args to expected types
 
         Returns:
             A new Ref for this operation
         """
         resolved_args: dict[str, Any] = {}
+
+        sig = get_operation_signature(op_name) if coerce_types else None
+        params = sig["params"] if sig else {}
+
         for key, value in arguments.items():
             if isinstance(value, str) and value.startswith("@"):
                 resolved_args[key] = self.get(value)
+            elif coerce_types and isinstance(value, str) and key in params:
+                resolved_args[key] = self._coerce_type(value, params[key])
             else:
                 resolved_args[key] = value
 
         return self.ref(op_name, **resolved_args)
 
-    def handle_tool_call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+    def _coerce_type(self, value: str, param_info: dict[str, Any]) -> Any:
+        """Coerce a string value to the expected type if possible."""
+        expected_type = param_info.get("type", "")
+
+        if expected_type == "int":
+            try:
+                return int(value)
+            except ValueError:
+                return value
+        elif expected_type == "float":
+            try:
+                return float(value)
+            except ValueError:
+                return value
+        elif expected_type == "bool":
+            if value.lower() in ("true", "1", "yes"):
+                return True
+            elif value.lower() in ("false", "0", "no"):
+                return False
+            return value
+
+        return value
+
+    def handle_tool_call(
+        self, name: str, arguments: dict[str, Any], *, catch_errors: bool = False
+    ) -> ToolResult:
         """
         Handle any LLM tool call within this session.
 
@@ -152,6 +193,8 @@ class Session:
         Args:
             name: Tool/operation name from LLM
             arguments: Arguments dict (may contain "@ref_id" strings)
+            catch_errors: If True, catch ResolutionError and return structured
+                error result instead of raising
 
         Returns:
             ToolResult that can be serialized back to the LLM
@@ -160,7 +203,8 @@ class Session:
             for tool_call in response.tool_calls:
                 result = session.handle_tool_call(
                     tool_call.function.name,
-                    json.loads(tool_call.function.arguments)
+                    json.loads(tool_call.function.arguments),
+                    catch_errors=True,
                 )
                 messages.append({
                     "role": "tool",
@@ -170,11 +214,16 @@ class Session:
         """
         from ._inspect import peek
 
-        if name == "peek":
-            ref_id = arguments.get("ref") or arguments.get("ref_id")
-            return ToolResult.from_peek(peek(self.get(ref_id)))
-        else:
-            return ToolResult.from_ref(self.ref_from_tool_call(name, arguments))
+        try:
+            if name == "peek":
+                ref_id = arguments.get("ref") or arguments.get("ref_id")
+                return ToolResult.from_peek(peek(self.get(ref_id)))
+            else:
+                return ToolResult.from_ref(self.ref_from_tool_call(name, arguments))
+        except ResolutionError as e:
+            if catch_errors:
+                return ToolResult.from_error(e)
+            raise
 
     def __repr__(self) -> str:
         return f"Session({self.id!r}, refs={len(self._refs)})"

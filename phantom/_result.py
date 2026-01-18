@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ._ref import Ref
+
+if TYPE_CHECKING:
+    from ._errors import ResolutionError
 
 
 @dataclass
@@ -33,9 +36,13 @@ class ToolResult:
     @classmethod
     def from_ref(cls, ref: Ref[Any]) -> ToolResult:
         """Create result for a lazy operation that created a ref."""
+        serialized_args = {}
+        for k, v in ref.args.items():
+            serialized_args[k] = v.id if isinstance(v, Ref) else v
+
         return cls(
             kind="ref",
-            data={"ref": ref.id, "op": ref.op},
+            data={"ref": ref.id, "op": ref.op, "args": serialized_args},
             ref=ref,
         )
 
@@ -46,4 +53,20 @@ class ToolResult:
             kind="peek",
             data=peek_data,
             ref=None,
+        )
+
+    @classmethod
+    def from_error(cls, error: ResolutionError) -> ToolResult:
+        """Create result for a resolution error."""
+        return cls(
+            kind="error",
+            data={
+                "error": True,
+                "type": type(error.cause).__name__ if error.cause else "ResolutionError",
+                "message": str(error.cause) if error.cause else str(error),
+                "ref": error.ref.id,
+                "op": error.ref.op,
+                "chain": error.chain,
+            },
+            ref=error.ref,
         )
