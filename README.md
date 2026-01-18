@@ -4,127 +4,165 @@
 
 **Let LLMs orchestrate data pipelines without seeing the data.**
 
-The LLM reasons with opaque references (`@a3f2`), while your code works with actual values in memory. A lazy computation graph connects them.
+Phantom creates a symbolic layer between your LLM and your data. The LLM reasons with opaque references (`@a3f2`) and builds a computation graph, while your code holds the actual data in memory. When you're ready, `resolve()` executes the graph and returns the result.
 
 ## The Problem
 
-When an LLM needs to analyze data, you have two bad options:
+When building LLM-powered data analysis tools, you face a dilemma:
 
-1. **Send the data to the LLM**: wastes tokens, hits context limits, leaks sensitive information
-2. **Hard-code the pipeline**: no flexibility, defeats the purpose of using an LLM
+1. **Send the data to the LLM**. Wastes tokens, hits context limits, exposes sensitive information
+2. **Hard-code the pipeline**. No flexibility, defeats the purpose of using an LLM
 
-Phantom offers a third way: let the LLM build the pipeline symbolically, then execute it.
+Phantom offers a third way: the LLM builds the pipeline symbolically and your code executes it.
 
-## How It Works
+## Example: AI Data Analyst
 
-The LLM calls your tools and receives opaque refs:
+Imagine a user asks: *"What's our most profitable customer segment by region?"*
 
-```python
-load("sales.parquet")                    # → {"ref": "@a3f2"}
-load("products.parquet")                 # → {"ref": "@b4c3"}
-join("@a3f2", "@b4c3", on="product_id")  # → {"ref": "@c5d6"}
+The LLM doesn't need to see 10,000 rows of data to answer this. It needs to know the schema, understand the relationships, and compose the right transformations. Here's how it works with Phantom:
+
+**Step 1: LLM loads datasets and receives opaque refs**
+```
+LLM calls: load_dataset("orders")     → returns {"ref": "@a3f2"}
+LLM calls: load_dataset("customers")  → returns {"ref": "@b4c3"}
+LLM calls: load_dataset("products")   → returns {"ref": "@c5d6"}
 ```
 
-It can inspect structure without seeing the full data (inspectors are customizable per type):
-
-```python
-peek("@c5d6")
-# → {
-#     "shape": [8420, 5],
-#     "columns": {"region": "str", "quantity": "int64", "price": "float64", ...},
-#     "sample": [{"region": "West", "quantity": 100, "price": 49.99}, ...]
-#   }
+**Step 2: LLM peeks at structure (not the full data)**
+```
+LLM calls: peek("@a3f2")
+→ {
+    "ref": "@a3f2",
+    "type": "list",
+    "length": 12,
+    "keys": ["order_id", "customer_id", "product_id", "quantity", "order_date"],
+    "sample": [{"order_id": 1, "customer_id": "C001", "product_id": "P001", ...}]
+  }
 ```
 
-The LLM continues building the pipeline:
-
-```python
-compute("@c5d6", "quantity * price")  # → {"ref": "@d7e8"}
-group_by("@d7e8", by="region")        # → {"ref": "@e9f0"}
+**Step 3: LLM builds the pipeline using refs**
+```
+LLM calls: join("@a3f2", "@c5d6", left_on="product_id", right_on="product_id")  → {"ref": "@d7e8"}
+LLM calls: join("@d7e8", "@b4c3", left_on="customer_id", right_on="customer_id") → {"ref": "@e9f0"}
+LLM calls: compute("@e9f0", column="profit", expression="quantity * (unit_price - cost)")  → {"ref": "@f1a2"}
+LLM calls: group_by("@f1a2", keys=["segment", "region"], aggregations={"total": "sum:profit"})  → {"ref": "@g3b4"}
+LLM calls: sort("@g3b4", by="total", descending=True)  → {"ref": "@h5c6"}
 ```
 
-When finished, you execute the graph and get the actual data:
-
+**Step 4: Your code resolves the final ref into actual data**
 ```python
-data = phantom.resolve("@e9f0")  # returns the actual DataFrame
+result = phantom.resolve("@h5c6")  
 ```
 
-## Usage
+The LLM orchestrated a multi-join, aggregation, and sort without ever seeing the underlying data.
 
-### 1. Define operations
+## Defining Operations
+
+Operations are regular Python functions decorated with `@phantom.op`. Your function's docstring becomes the tool description for the LLM.
 
 ```python
 import phantom
-import pandas as pd
 
 @phantom.op
-def load(path: str) -> pd.DataFrame:
-    """Load a dataset from disk."""
-    return pd.read_parquet(path)
+def load_dataset(name: str) -> list[dict]:
+    """Load a dataset by name. Available: 'orders', 'customers', 'products'."""
+    return db.query(f"SELECT * FROM {name}")
 
 @phantom.op
-def query(data: phantom.Ref[pd.DataFrame], condition: str) -> pd.DataFrame:
-    """Filter rows matching a condition."""
-    return data.query(condition)
+def join(left: phantom.Ref[list], right: phantom.Ref[list], left_on: str, right_on: str) -> list[dict]:
+    """Join two datasets on matching keys."""
+    right_lookup = {row[right_on]: row for row in right}
+    return [{**l, **right_lookup[l[left_on]]} for l in left if l[left_on] in right_lookup]
 
 @phantom.op
-def group_by(data: phantom.Ref[pd.DataFrame], columns: list[str], agg: dict) -> pd.DataFrame:
-    """Group by columns and aggregate."""
-    return data.groupby(columns).agg(agg).reset_index()
+def group_by(data: phantom.Ref[list], keys: list[str], aggregations: dict) -> list[dict]:
+    """Group by keys and aggregate. Use format {"output_col": "func:source_col"}."""
+    # Your aggregation logic here...
+    ...
 ```
 
-When a parameter is typed as `Ref[T]`, Phantom resolves it before calling your function. You receive the actual `DataFrame`, not the semantic ref.
+The key insight: **parameters typed as `Ref[T]` are automatically resolved** before your function runs. You write normal code that receives normal data.
 
-### 2. Wire up your LLM
+## Wiring Up Your LLM
+
+Phantom auto-generates tool definitions from your operations and handles tool calls uniformly:
 
 ```python
+import json
+import openai
+import phantom
+
+client = openai.OpenAI()
 tools = phantom.get_openai_tools()
 
-while not done:
-    response = client.chat.completions.create(model="gpt-4o", messages=messages, tools=tools)
+messages = [{"role": "user", "content": "What's our most profitable segment by region?"}]
 
-    for tool_call in response.choices[0].message.tool_calls:
-        result = phantom.handle_tool_call(
-            tool_call.function.name,
-            json.loads(tool_call.function.arguments)
-        )
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "content": json.dumps(result.to_dict())
-        })
+while True:
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        tools=tools,
+        messages=messages,
+    )
+    message = response.choices[0].message
 
-# When the LLM is done, execute the final pipeline
-data = phantom.resolve(result.ref)
+    if message.tool_calls:
+        messages.append(message)
+        for tool_call in message.tool_calls:
+            result = phantom.handle_tool_call(
+                tool_call.function.name,
+                json.loads(tool_call.function.arguments)
+            )
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(result.to_dict()),
+            })
+    else:
+        break
+
+# Execute the pipeline the LLM built
+final_data = phantom.resolve(result.ref)
 ```
 
-`handle_tool_call` handles everything uniformly. Lazy operations return a ref, while `peek` resolves immediately so the LLM can inspect column names, types, and sample rows.
+`handle_tool_call` returns refs for lazy operations and immediate results for `peek`. The LLM sees just enough to make decisions.
 
 ## Key Features
 
-**Lazy evaluation**: Nothing runs until you call `resolve()`.
+### Lazy Evaluation
+Nothing executes until you call `resolve()`. The LLM builds a DAG of operations and you decide when to run it.
 
-**Session isolation**: Run multiple conversations without ref collisions.
+### Data Inspection with `peek`
+Let the LLM see schema, shape, and sample rows, not the full dataset. Register custom inspectors for your data types:
+```python
+@phantom.inspector(pd.DataFrame)
+def inspect_df(df):
+    return {"shape": df.shape, "columns": list(df.columns), "sample": df.head(3).to_dict("records")}
+```
+
+### Session Isolation
+Run concurrent analyses without ref collisions:
 ```python
 session = phantom.Session("user_123")
-ref = session.ref("load", path="data.parquet")
+ref = session.ref("load_dataset", name="orders")
 result = session.resolve(ref)
 ```
 
-**Data inspection**: Let the LLM peek at structure without loading everything.
-```python
-info = phantom.peek(ref)
-# {"ref": "@a3f2", "type": "dataframe", "shape": [10000, 5], "columns": {...}, "sample": [...]}
-```
-
-**Graph serialization**: Save pipelines and replay them later.
+### Graph Serialization
+Save and replay pipelines:
 ```python
 phantom.save_graph(ref, "analysis.json")
 loaded = phantom.load_graph("analysis.json")
 ```
 
-**Rich errors**: When resolution fails, see the full ref chain.
+### Rich Error Context
+When resolution fails, see the full ref chain:
 ```python
 except ResolutionError as e:
-    print(e.chain)  # ['@a3f2', '@b4c3', '@d5e4']
+    print(e.chain)  # ['@a3f2', '@b4c3', '@d5e4'] — trace the failure path
+```
+
+### Async Support
+For I/O-bound operations, use `aresolve()` with parallel execution:
+```python
+result = await phantom.aresolve(ref, parallel=True)  
 ```
