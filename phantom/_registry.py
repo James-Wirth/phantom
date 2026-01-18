@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable, TypeVar, get_origin, get_type_hints
+from typing import Any, TypeVar, get_origin, get_type_hints
 
 from ._ref import Ref
 
@@ -74,17 +75,26 @@ def get_operation_signature(name: str) -> dict[str, Any]:
         if param_name in hints:
             type_hint = hints[param_name]
             param_info["type_hint"] = type_hint  # Preserve full type hint
-            param_info["type"] = type_hint.__name__ if hasattr(type_hint, "__name__") else str(type_hint)
+            if hasattr(type_hint, "__name__"):
+                param_info["type"] = type_hint.__name__
+            else:
+                param_info["type"] = str(type_hint)
             param_info["is_ref"] = _is_ref_type(type_hint)
         if param.default is not inspect.Parameter.empty:
             param_info["default"] = param.default
         params[param_name] = param_info
 
+    return_hint = hints.get("return", Any)
+    if hasattr(return_hint, "__name__"):
+        return_type = return_hint.__name__
+    else:
+        return_type = str(return_hint)
+
     return {
         "name": name,
         "doc": func.__doc__,
         "params": params,
-        "return_type": hints.get("return", Any).__name__ if hasattr(hints.get("return", Any), "__name__") else str(hints.get("return", Any)),
+        "return_type": return_type,
     }
 
 
@@ -161,7 +171,7 @@ def get_openai_tools(include_peek: bool = True) -> list[dict[str, Any]]:
             if is_ref:
                 prop: dict[str, Any] = {
                     "type": "string",
-                    "description": "A ref ID (e.g., '@abc123') from a previous operation",
+                    "description": "A ref ID (e.g., '@abc123') from a prior op",
                     "pattern": "^@[a-f0-9]+$",
                 }
             else:
@@ -192,8 +202,10 @@ def get_openai_tools(include_peek: bool = True) -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "peek",
-                "description": "Inspect a ref to see its type, shape, columns, and sample data. "
-                              "Use this to understand data structure before transforming it.",
+                "description": (
+                    "Inspect a ref to see its type, shape, columns, and sample "
+                    "data. Use this to understand structure before transforming."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {

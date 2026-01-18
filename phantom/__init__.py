@@ -31,8 +31,6 @@ from typing import Any, TypeVar
 from ._errors import CycleError, ResolutionError
 from ._inspect import inspector, peek
 from ._ref import Ref
-from ._result import ToolResult
-from ._session import Session
 from ._registry import (
     clear,
     get_openai_tools,
@@ -45,7 +43,9 @@ from ._registry import (
     register_ref,
 )
 from ._resolve import resolve
+from ._result import ToolResult
 from ._serialize import deserialize_graph, load_graph, save_graph, serialize_graph
+from ._session import Session
 
 __all__ = [
     # Core types

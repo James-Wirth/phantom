@@ -1,5 +1,7 @@
 # Phantom
 
+[![CI](https://github.com/James-Wirth/phantom/actions/workflows/ci.yml/badge.svg)](https://github.com/James-Wirth/phantom/actions/workflows/ci.yml)
+
 **Let LLMs orchestrate data pipelines without seeing the data.**
 
 The LLM reasons with opaque references (`@a3f2`), while your code works with actual values in memory. A lazy computation graph connects them.

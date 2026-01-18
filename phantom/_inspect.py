@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ._ref import Ref
 from ._registry import get_ref
@@ -11,7 +12,10 @@ from ._resolve import resolve
 _inspectors: dict[type, Callable[[Any], dict[str, Any]]] = {}
 
 
-def inspector(data_type: type) -> Callable[[Callable[[Any], dict[str, Any]]], Callable[[Any], dict[str, Any]]]:
+InspectorFunc = Callable[[Any], dict[str, Any]]
+
+
+def inspector(data_type: type) -> Callable[[InspectorFunc], InspectorFunc]:
     """
     Decorator to register an inspector for a data type.
 
@@ -31,7 +35,7 @@ def inspector(data_type: type) -> Callable[[Callable[[Any], dict[str, Any]]], Ca
                 "columns": list(df.columns),
             }
     """
-    def decorator(fn: Callable[[Any], dict[str, Any]]) -> Callable[[Any], dict[str, Any]]:
+    def decorator(fn: InspectorFunc) -> InspectorFunc:
         _inspectors[data_type] = fn
         return fn
     return decorator

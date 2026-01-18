@@ -57,7 +57,7 @@ class Session:
         Returns:
             A Ref registered in this session
         """
-        get_operation(op_name)  
+        get_operation(op_name)
 
         new_ref: Ref[Any] = Ref(op=op_name, args=kwargs)
         self._refs[new_ref.id] = new_ref

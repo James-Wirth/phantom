@@ -1,0 +1,12 @@
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+]
+ignore = []
+
+[lint.per-file-ignores]
+"tests/*" = ["F401"]  # Allow unused imports in tests
