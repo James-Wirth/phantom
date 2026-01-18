@@ -22,14 +22,14 @@ Imagine a user asks: *"What's our most profitable customer segment by region?"*
 The LLM doesn't need to see 10,000 rows of data to answer this. It needs to know the schema, understand the relationships, and compose the right transformations. Here's how it works with Phantom:
 
 **Step 1: LLM loads datasets and receives opaque refs**
-```
+```python
 LLM calls: load_dataset("orders")     → returns {"ref": "@a3f2"}
 LLM calls: load_dataset("customers")  → returns {"ref": "@b4c3"}
 LLM calls: load_dataset("products")   → returns {"ref": "@c5d6"}
 ```
 
 **Step 2: LLM peeks at structure (not the full data)**
-```
+```python
 LLM calls: peek("@a3f2")
 → {
     "ref": "@a3f2",
@@ -41,7 +41,7 @@ LLM calls: peek("@a3f2")
 ```
 
 **Step 3: LLM builds the pipeline using refs**
-```
+```python
 LLM calls: join("@a3f2", "@c5d6", left_on="product_id", right_on="product_id")  → {"ref": "@d7e8"}
 LLM calls: join("@d7e8", "@b4c3", left_on="customer_id", right_on="customer_id") → {"ref": "@e9f0"}
 LLM calls: compute("@e9f0", column="profit", expression="quantity * (unit_price - cost)")  → {"ref": "@f1a2"}
