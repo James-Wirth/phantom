@@ -44,6 +44,7 @@ from ._registry import (
     register_ref,
 )
 from ._resolve import resolve, resolve_iterative
+from ._serialize import deserialize_graph, load_graph, save_graph, serialize_graph
 
 __all__ = [
     # Core types
@@ -68,6 +69,11 @@ __all__ = [
     "get_operation_signature",
     "get_openai_tools",
     "clear",
+    # Serialization
+    "serialize_graph",
+    "deserialize_graph",
+    "save_graph",
+    "load_graph",
 ]
 
 T = TypeVar("T")
