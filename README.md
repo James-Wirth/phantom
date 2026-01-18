@@ -37,30 +37,29 @@ The LLM doesn't need to see 10,000 rows of data to answer this. It needs to know
 
 **Step 1: LLM loads datasets and receives opaque refs**
 ```python
-LLM calls: load_dataset("orders")     → returns {"ref": "@a3f2"}
-LLM calls: load_dataset("customers")  → returns {"ref": "@b4c3"}
-LLM calls: load_dataset("products")   → returns {"ref": "@c5d6"}
+load_csv("orders.csv")     → {"ref": "@a3f2"}
+load_csv("customers.csv")  → {"ref": "@b4c3"}
+load_csv("products.csv")   → {"ref": "@c5d6"}
 ```
 
 **Step 2: LLM peeks at structure (not the full data)**
 ```python
-LLM calls: peek("@a3f2")
-→ {
-    "ref": "@a3f2",
-    "type": "list",
-    "length": 12,
-    "keys": ["order_id", "customer_id", "product_id", "quantity", "order_date"],
-    "sample": [{"order_id": 1, "customer_id": "C001", "product_id": "P001", ...}]
-  }
+peek("@a3f2") → {
+  "ref": "@a3f2",
+  "type": "DataFrame",
+  "shape": [10000, 5],
+  "columns": ["order_id", "customer_id", "product_id", "quantity", "order_date"],
+  "sample": [{"order_id": 1, "customer_id": "C001", "product_id": "P001", ...}]
+}
 ```
 
 **Step 3: LLM builds the pipeline using refs**
 ```python
-LLM calls: join("@a3f2", "@c5d6", left_on="product_id", right_on="product_id")  → {"ref": "@d7e8"}
-LLM calls: join("@d7e8", "@b4c3", left_on="customer_id", right_on="customer_id") → {"ref": "@e9f0"}
-LLM calls: compute("@e9f0", column="profit", expression="quantity * (unit_price - cost)")  → {"ref": "@f1a2"}
-LLM calls: group_by("@f1a2", keys=["segment", "region"], aggregations={"total": "sum:profit"})  → {"ref": "@g3b4"}
-LLM calls: sort("@g3b4", by="total", descending=True)  → {"ref": "@h5c6"}
+merge("@a3f2", "@c5d6", on="product_id")                              → {"ref": "@d7e8"}
+merge("@d7e8", "@b4c3", on="customer_id")                             → {"ref": "@e9f0"}
+assign("@e9f0", column="profit", expr="quantity * (price - cost)")    → {"ref": "@f1a2"}
+groupby_agg("@f1a2", by=["segment", "region"], agg={"profit": "sum"}) → {"ref": "@g3b4"}
+sort_values("@g3b4", by="profit", ascending=False)                    → {"ref": "@h5c6"}
 ```
 
 **Step 4: Your code resolves the final ref into actual data**
@@ -75,27 +74,31 @@ The LLM orchestrated a multi-join, aggregation, and sort without ever seeing the
 Operations are regular Python functions decorated with `@phantom.op`. Your function's docstring becomes the tool description for the LLM.
 
 ```python
+import pandas as pd
 import phantom
 
 @phantom.op
-def load_dataset(name: str) -> list[dict]:
-    """Load a dataset by name. Available: 'orders', 'customers', 'products'."""
-    return db.query(f"SELECT * FROM {name}")
+def load_csv(path: str) -> pd.DataFrame:
+    """Load a CSV file as a DataFrame."""
+    return pd.read_csv(path)
 
 @phantom.op
-def join(left: phantom.Ref[list], right: phantom.Ref[list], left_on: str, right_on: str) -> list[dict]:
-    """Join two datasets on matching keys."""
-    right_lookup = {row[right_on]: row for row in right}
-    return [{**l, **right_lookup[l[left_on]]} for l in left if l[left_on] in right_lookup]
+def merge(left: phantom.Ref[pd.DataFrame], right: phantom.Ref[pd.DataFrame], on: str) -> pd.DataFrame:
+    """Merge two DataFrames on a key column."""
+    return left.merge(right, on=on)
 
 @phantom.op
-def group_by(data: phantom.Ref[list], keys: list[str], aggregations: dict) -> list[dict]:
-    """Group by keys and aggregate. Use format {"output_col": "func:source_col"}."""
-    # Your aggregation logic here...
-    ...
+def groupby_agg(df: phantom.Ref[pd.DataFrame], by: list[str], agg: dict) -> pd.DataFrame:
+    """Group by columns and aggregate. Example: agg={"profit": "sum"}"""
+    return df.groupby(by, as_index=False).agg(agg)
+
+@phantom.op
+def sort_values(df: phantom.Ref[pd.DataFrame], by: str, ascending: bool = True) -> pd.DataFrame:
+    """Sort DataFrame by column."""
+    return df.sort_values(by, ascending=ascending)
 ```
 
-The key insight: **parameters typed as `Ref[T]` are automatically resolved** before your function runs. You write normal code that receives normal data.
+The key insight: **parameters typed as `Ref[T]` are automatically resolved** before your function runs. You write normal pandas code that receives normal DataFrames.
 
 ## Wiring Up Your LLM
 
@@ -146,11 +149,16 @@ final_data = phantom.resolve(result.ref)
 Nothing executes until you call `resolve()`. The LLM builds a DAG of operations and you decide when to run it.
 
 ### Data Inspection with `peek`
-Let the LLM see schema, shape, and sample rows, not the full dataset. Register custom inspectors for your data types:
+Let the LLM see schema, shape, and sample rows—not the full dataset. Register custom inspectors for your data types:
 ```python
 @phantom.inspector(pd.DataFrame)
-def inspect_df(df):
-    return {"shape": df.shape, "columns": list(df.columns), "sample": df.head(3).to_dict("records")}
+def inspect_df(df: pd.DataFrame) -> dict:
+    return {
+        "shape": list(df.shape),
+        "columns": list(df.columns),
+        "dtypes": df.dtypes.astype(str).to_dict(),
+        "sample": df.head(3).to_dict("records"),
+    }
 ```
 
 ### Session Isolation
