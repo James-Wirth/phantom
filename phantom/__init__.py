@@ -43,7 +43,7 @@ from ._registry import (
     op,
     register_ref,
 )
-from ._resolve import resolve
+from ._resolve import resolve, resolve_iterative
 
 __all__ = [
     # Core types
@@ -59,6 +59,7 @@ __all__ = [
     "ref",
     "ref_from_tool_call",
     "resolve",
+    "resolve_iterative",
     "peek",
     "get",
     # Registry
