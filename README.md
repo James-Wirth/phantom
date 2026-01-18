@@ -17,17 +17,37 @@ Phantom offers a third way: let the LLM build the pipeline symbolically, then ex
 
 ## How It Works
 
-| LLM calls tool | You return |
-|----------------|------------|
-| `load("sales.parquet")` | `{"ref": "@a3f2"}` |
-| `load("products.parquet")` | `{"ref": "@b4c3"}` |
-| `join("@a3f2", "@b4c3", on="product_id")` | `{"ref": "@c5d6"}` |
-| `peek("@c5d6")` | `{"shape": [8420, 5], "columns": ["region", "product", ...]}` |
-| `compute("@c5d6", "quantity * price")` | `{"ref": "@d7e8"}` |
-| `group_by("@d7e8", by="region")` | `{"ref": "@e9f0"}` |
-| `phantom.resolve("@e9f0")` | DataFrame (executes full graph) |
+The LLM calls your tools and receives opaque refs:
 
-The LLM never sees the data itself, just refs. `peek` resolves immediately so the LLM can inspect structure and decide what to do next.
+```python
+load("sales.parquet")                    # → {"ref": "@a3f2"}
+load("products.parquet")                 # → {"ref": "@b4c3"}
+join("@a3f2", "@b4c3", on="product_id")  # → {"ref": "@c5d6"}
+```
+
+It can inspect structure without seeing the full data (inspectors are customizable per type):
+
+```python
+peek("@c5d6")
+# → {
+#     "shape": [8420, 5],
+#     "columns": {"region": "str", "product": "str", "quantity": "int64", ...},
+#     "sample": [{"region": "West", "product": "Widget", "quantity": 100}, ...]
+#   }
+```
+
+The LLM continues building the pipeline:
+
+```python
+compute("@c5d6", "quantity * price")  # → {"ref": "@d7e8"}
+group_by("@d7e8", by="region")        # → {"ref": "@e9f0"}
+```
+
+When finished, you execute the graph and get the actual data:
+
+```python
+data = phantom.resolve("@e9f0")  # returns the actual DataFrame
+```
 
 ## Usage
 
