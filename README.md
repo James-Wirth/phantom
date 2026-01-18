@@ -31,8 +31,8 @@ It can inspect structure without seeing the full data (inspectors are customizab
 peek("@c5d6")
 # → {
 #     "shape": [8420, 5],
-#     "columns": {"region": "str", "product": "str", "quantity": "int64", ...},
-#     "sample": [{"region": "West", "product": "Widget", "quantity": 100}, ...]
+#     "columns": {"region": "str", "quantity": "int64", "price": "float64", ...},
+#     "sample": [{"region": "West", "quantity": 100, "price": 49.99}, ...]
 #   }
 ```
 
