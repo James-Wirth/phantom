@@ -136,15 +136,18 @@ def _python_type_to_json_schema(type_name: str) -> str:
     return mapping.get(type_name, "string")
 
 
-def get_openai_tools(include_peek: bool = True) -> list[dict[str, Any]]:
+def get_tools(
+    format: str = "openai", include_peek: bool = True
+) -> list[dict[str, Any]]:
     """
-    Generate OpenAI-compatible tool definitions for all registered operations.
+    Generate tool definitions for all registered operations.
 
     Args:
+        format: The schema format to use. Options: "openai", "anthropic"
         include_peek: Whether to include the peek tool (default True)
 
     Returns:
-        A list ready to pass to the OpenAI API's `tools` parameter.
+        A list of tool definitions in the specified format.
 
     Example:
         @phantom.op
@@ -152,13 +155,25 @@ def get_openai_tools(include_peek: bool = True) -> list[dict[str, Any]]:
             '''Search for items matching query.'''
             ...
 
-        tools = phantom.get_openai_tools()
+        # OpenAI format (default)
+        tools = phantom.get_tools()
         response = openai.chat.completions.create(
             model="gpt-4",
             messages=messages,
             tools=tools,
         )
+
+        # Anthropic format
+        tools = phantom.get_tools(format="anthropic")
+        response = anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            messages=messages,
+            tools=tools,
+        )
     """
+    if format not in ("openai", "anthropic"):
+        raise ValueError(f"Unknown format: {format}. Use 'openai' or 'anthropic'.")
+
     tools = []
     for op_name in list_operations():
         sig = get_operation_signature(op_name)
@@ -184,40 +199,61 @@ def get_openai_tools(include_peek: bool = True) -> list[dict[str, Any]]:
             if "default" not in param_info:
                 required.append(param_name)
 
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": sig["name"],
-                "description": sig["doc"] or f"Execute the {sig['name']} operation",
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
+        name = sig["name"]
+        description = sig["doc"] or f"Execute the {name} operation"
+        parameters = {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        }
+
+        if format == "openai":
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters,
                 },
-            },
-        })
+            })
+        else:  # anthropic
+            tools.append({
+                "name": name,
+                "description": description,
+                "input_schema": parameters,
+            })
 
     if include_peek:
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": "peek",
-                "description": (
-                    "Inspect a ref to see its type, shape, columns, and sample "
-                    "data. Use this to understand structure before transforming."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "ref": {
-                            "type": "string",
-                            "description": "The ref ID to inspect (e.g., '@abc123')",
-                            "pattern": "^@[a-f0-9]+$",
-                        }
-                    },
-                    "required": ["ref"],
-                },
+        peek_params = {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The ref ID to inspect (e.g., '@abc123')",
+                    "pattern": "^@[a-f0-9]+$",
+                }
             },
-        })
+            "required": ["ref"],
+        }
+        peek_description = (
+            "Inspect a ref to see its type, shape, columns, and sample "
+            "data. Use this to understand structure before transforming."
+        )
+
+        if format == "openai":
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "peek",
+                    "description": peek_description,
+                    "parameters": peek_params,
+                },
+            })
+        else:  # anthropic
+            tools.append({
+                "name": "peek",
+                "description": peek_description,
+                "input_schema": peek_params,
+            })
 
     return tools

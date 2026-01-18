@@ -33,10 +33,10 @@ from ._inspect import apeek, inspector, peek
 from ._ref import Ref
 from ._registry import (
     clear,
-    get_openai_tools,
     get_operation,
     get_operation_signature,
     get_ref,
+    get_tools,
     list_operations,
     list_refs,
     op,
@@ -71,7 +71,7 @@ __all__ = [
     "list_operations",
     "list_refs",
     "get_operation_signature",
-    "get_openai_tools",
+    "get_tools",
     "clear",
     # Serialization
     "serialize_graph",

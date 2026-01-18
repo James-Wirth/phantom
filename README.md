@@ -110,7 +110,7 @@ import openai
 import phantom
 
 client = openai.OpenAI()
-tools = phantom.get_openai_tools()
+tools = phantom.get_tools(format="openai")  
 
 messages = [{"role": "user", "content": "What's our most profitable segment by region?"}]
 
