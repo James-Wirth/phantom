@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import inspect
 from functools import wraps
-from typing import Any, Callable, TypeVar, get_type_hints
+from typing import Any, Callable, TypeVar, get_origin, get_type_hints
 
 from ._ref import Ref
 
 T = TypeVar("T")
+
+
+def _is_ref_type(type_hint: Any) -> bool:
+    """Check if a type hint is Ref or Ref[T]."""
+    if type_hint is Ref:
+        return True
+    origin = get_origin(type_hint)
+    return origin is Ref
 
 _operations: dict[str, Callable[..., Any]] = {}
 _refs: dict[str, Ref[Any]] = {}
@@ -64,7 +72,10 @@ def get_operation_signature(name: str) -> dict[str, Any]:
     for param_name, param in sig.parameters.items():
         param_info: dict[str, Any] = {}
         if param_name in hints:
-            param_info["type"] = hints[param_name].__name__ if hasattr(hints[param_name], "__name__") else str(hints[param_name])
+            type_hint = hints[param_name]
+            param_info["type_hint"] = type_hint  # Preserve full type hint
+            param_info["type"] = type_hint.__name__ if hasattr(type_hint, "__name__") else str(type_hint)
+            param_info["is_ref"] = _is_ref_type(type_hint)
         if param.default is not inspect.Parameter.empty:
             param_info["default"] = param.default
         params[param_name] = param_info
@@ -142,10 +153,18 @@ def get_openai_tools() -> list[dict[str, Any]]:
         required = []
 
         for param_name, param_info in sig["params"].items():
-            prop: dict[str, Any] = {
-                "type": _python_type_to_json_schema(param_info.get("type", "str")),
-                "description": f"The {param_name} parameter",
-            }
+            is_ref = param_info.get("is_ref", False)
+            if is_ref:
+                prop: dict[str, Any] = {
+                    "type": "string",
+                    "description": "A ref ID (e.g., '@abc123') from a previous operation",
+                    "pattern": "^@[a-f0-9]+$",
+                }
+            else:
+                prop = {
+                    "type": _python_type_to_json_schema(param_info.get("type", "str")),
+                    "description": f"The {param_name} parameter",
+                }
             properties[param_name] = prop
 
             if "default" not in param_info:
