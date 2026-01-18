@@ -43,7 +43,7 @@ from ._registry import (
     op,
     register_ref,
 )
-from ._resolve import resolve, resolve_iterative
+from ._resolve import resolve
 from ._serialize import deserialize_graph, load_graph, save_graph, serialize_graph
 
 __all__ = [
@@ -60,7 +60,6 @@ __all__ = [
     "ref",
     "ref_from_tool_call",
     "resolve",
-    "resolve_iterative",
     "peek",
     "get",
     # Registry
