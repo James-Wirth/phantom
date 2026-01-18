@@ -112,57 +112,33 @@ final_data = phantom.resolve(result.ref)
 
 ## Example: AI Data Analyst
 
-Imagine a user asks: *"What's our most profitable customer segment by region?"*
+Imagine a user asks: *"What's our most profitable customer segment?"*
 
 The LLM doesn't need to see 10,000 rows of data to answer this. It needs to know the schema, understand the relationships, and compose the right transformations. Here's how it works with Phantom:
 
-```yaml
-ANALYST: I'll analyze profitability by customer segment. Let me load the datasets and
-explore their structure.
+**ANALYST:** I'll load the datasets and explore their structure.
 
-[load_csv] {"path": "orders.csv"}
-  → @a3f2
+| Tool Call | Response |
+|-----------|----------|
+| `load_csv(path="orders.csv")` | `{"ref": "@a3f2", "op": "load_csv", ...}` |
+| `load_csv(path="customers.csv")` | `{"ref": "@b4c3", "op": "load_csv", ...}` |
+| `peek(ref="@a3f2")` | `{"type": "dataframe", "shape": [10000, 4], "columns": ["order_id", "customer_id", "quantity", "profit"]}` |
+| `peek(ref="@b4c3")` | `{"type": "dataframe", "shape": [500, 3], "columns": ["customer_id", "name", "segment"]}` |
 
-[peek] {"ref": "@a3f2"}
-  → 10000 rows, columns: ['order_id', 'customer_id', 'product_id', 'quantity', 'order_date']
+**ANALYST:** Now I'll merge and aggregate profit by segment.
 
-[load_csv] {"path": "customers.csv"}
-  → @b4c3
+| Tool Call | Response |
+|-----------|----------|
+| `merge(left="@a3f2", right="@b4c3", on="customer_id")` | `{"ref": "@c5d6", ...}` |
+| `groupby_agg(df="@c5d6", by=["segment"], agg={"profit": "sum"})` | `{"ref": "@d7e8", ...}` |
+| `sort_values(df="@d7e8", by="profit", ascending=false)` | `{"ref": "@e9f0", ...}` |
+| `peek(ref="@e9f0")` | `{"type": "dataframe", "shape": [3, 2], "columns": ["segment", "profit"]}` |
 
-[peek] {"ref": "@b4c3"}
-  → 500 rows, columns: ['customer_id', 'name', 'region', 'segment']
-
-[load_csv] {"path": "products.csv"}
-  → @c5d6
-
-[peek] {"ref": "@c5d6"}
-  → 50 rows, columns: ['product_id', 'name', 'category', 'price', 'cost']
-
-ANALYST: Now I'll merge the datasets and aggregate profit by segment and region.
-
-[merge] {"left": "@a3f2", "right": "@c5d6", "on": "product_id"}
-  → @d7e8
-
-[merge] {"left": "@d7e8", "right": "@b4c3", "on": "customer_id"}
-  → @e9f0
-
-[groupby_agg] {"df": "@e9f0", "by": ["segment", "region"], "agg": {"profit": "sum"}}
-  → @g3b4
-
-[sort_values] {"df": "@g3b4", "by": "profit", "ascending": false}
-  → @h5c6
-
-[peek] {"ref": "@h5c6"}
-  → 12 rows, columns: ['segment', 'region', 'profit']
-
-ANALYST: Enterprise customers in the West region are most profitable at $1.2M, followed
-by Enterprise East at $980K. SMB segments show consistent mid-tier performance across
-all regions.
-```
+**ANALYST:** Enterprise is most profitable at $1.2M, followed by SMB at $800K and Consumer at $450K.
 
 The LLM orchestrated a multi-join, aggregation, and sort without ever seeing the underlying data. Your code then resolves the final ref:
 ```python
-result = phantom.resolve("@h5c6")
+result = phantom.resolve("@e9f0")
 ```
 
 ## Key Features
