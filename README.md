@@ -36,57 +36,6 @@ cd phantom
 pip install -e .
 ```
 
-## Example: AI Data Analyst
-
-Imagine a user asks: *"What's our most profitable customer segment by region?"*
-
-The LLM doesn't need to see 10,000 rows of data to answer this. It needs to know the schema, understand the relationships, and compose the right transformations. Here's how it works with Phantom:
-
-**Step 1: LLM loads datasets and receives opaque refs**
-```python
-load_csv("orders.csv")
-  → {"ref": "@a3f2", "op": "load_csv", "args": {"path": "orders.csv"}}
-
-load_csv("customers.csv")
-  → {"ref": "@b4c3", "op": "load_csv", "args": {"path": "customers.csv"}}
-
-load_csv("products.csv")
-  → {"ref": "@c5d6", "op": "load_csv", "args": {"path": "products.csv"}}
-```
-
-**Step 2: LLM peeks at structure (not the full data)**
-```python
-peek("@a3f2") → {
-  "ref": "@a3f2",
-  "type": "DataFrame",
-  "shape": [10000, 5],
-  "columns": ["order_id", "customer_id", "product_id", "quantity", "order_date"],
-  "sample": [{"order_id": 1, "customer_id": "C001", "product_id": "P001", ...}]
-}
-```
-
-**Step 3: LLM builds the pipeline using refs**
-```python
-merge("@a3f2", "@c5d6", on="product_id")
-  → {"ref": "@d7e8", "op": "merge", "args": {"left": "@a3f2", "right": "@c5d6", "on": "product_id"}}
-
-merge("@d7e8", "@b4c3", on="customer_id")
-  → {"ref": "@e9f0", "op": "merge", "args": {"left": "@d7e8", "right": "@b4c3", "on": "customer_id"}}
-
-groupby_agg("@e9f0", by=["segment", "region"], agg={"profit": "sum"})
-  → {"ref": "@g3b4", "op": "groupby_agg", "args": {...}}
-
-sort_values("@g3b4", by="profit", ascending=False)
-  → {"ref": "@h5c6", "op": "sort_values", "args": {...}}
-```
-
-**Step 4: Your code resolves the final ref into actual data**
-```python
-result = phantom.resolve("@h5c6")  
-```
-
-The LLM orchestrated a multi-join, aggregation, and sort without ever seeing the underlying data.
-
 ## Defining Operations
 
 Operations are regular Python functions decorated with `@phantom.op`. Your function's docstring becomes the tool description for the LLM.
@@ -160,6 +109,61 @@ final_data = phantom.resolve(result.ref)
 ```
 
 `handle_tool_call` returns refs for lazy operations and immediate results for `peek`. The LLM sees just enough to make decisions.
+
+## Example: AI Data Analyst
+
+Imagine a user asks: *"What's our most profitable customer segment by region?"*
+
+The LLM doesn't need to see 10,000 rows of data to answer this. It needs to know the schema, understand the relationships, and compose the right transformations. Here's how it works with Phantom:
+
+```yaml
+ANALYST: I'll analyze profitability by customer segment. Let me load the datasets and
+explore their structure.
+
+[load_csv] {"path": "orders.csv"}
+  → @a3f2
+
+[peek] {"ref": "@a3f2"}
+  → 10000 rows, columns: ['order_id', 'customer_id', 'product_id', 'quantity', 'order_date']
+
+[load_csv] {"path": "customers.csv"}
+  → @b4c3
+
+[peek] {"ref": "@b4c3"}
+  → 500 rows, columns: ['customer_id', 'name', 'region', 'segment']
+
+[load_csv] {"path": "products.csv"}
+  → @c5d6
+
+[peek] {"ref": "@c5d6"}
+  → 50 rows, columns: ['product_id', 'name', 'category', 'price', 'cost']
+
+ANALYST: Now I'll merge the datasets and aggregate profit by segment and region.
+
+[merge] {"left": "@a3f2", "right": "@c5d6", "on": "product_id"}
+  → @d7e8
+
+[merge] {"left": "@d7e8", "right": "@b4c3", "on": "customer_id"}
+  → @e9f0
+
+[groupby_agg] {"df": "@e9f0", "by": ["segment", "region"], "agg": {"profit": "sum"}}
+  → @g3b4
+
+[sort_values] {"df": "@g3b4", "by": "profit", "ascending": false}
+  → @h5c6
+
+[peek] {"ref": "@h5c6"}
+  → 12 rows, columns: ['segment', 'region', 'profit']
+
+ANALYST: Enterprise customers in the West region are most profitable at $1.2M, followed
+by Enterprise East at $980K. SMB segments show consistent mid-tier performance across
+all regions.
+```
+
+The LLM orchestrated a multi-join, aggregation, and sort without ever seeing the underlying data. Your code then resolves the final ref:
+```python
+result = phantom.resolve("@h5c6")
+```
 
 ## Key Features
 
