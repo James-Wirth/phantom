@@ -15,6 +15,20 @@ When building LLM-powered data analysis tools, you face a dilemma:
 
 Phantom offers a third way: the LLM builds the pipeline symbolically and your code executes it.
 
+## Installation
+
+Install directly from GitHub:
+```bash
+pip install git+https://github.com/James-Wirth/phantom.git
+```
+
+Or clone and install in development mode:
+```bash
+git clone https://github.com/James-Wirth/phantom.git
+cd phantom
+pip install -e .
+```
+
 ## Example: AI Data Analyst
 
 Imagine a user asks: *"What's our most profitable customer segment by region?"*
