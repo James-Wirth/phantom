@@ -116,27 +116,21 @@ Imagine a user asks: *"What's our most profitable customer segment?"*
 
 The LLM doesn't need to see 10,000 rows of data to answer this. It needs to know the schema, understand the relationships, and compose the right transformations. Here's how it works with Phantom:
 
-**ANALYST:** I'll load the datasets and explore their structure.
+> **User:** What's our most profitable customer segment?
 
-| Tool Call | Response |
-|-----------|----------|
-| `load_csv(path="orders.csv")` | `{"ref": "@a3f2", "op": "load_csv", ...}` |
-| `load_csv(path="customers.csv")` | `{"ref": "@b4c3", "op": "load_csv", ...}` |
-| `peek(ref="@a3f2")` | `{"type": "dataframe", "shape": [10000, 4], "columns": ["order_id", "customer_id", "quantity", "profit"]}` |
-| `peek(ref="@b4c3")` | `{"type": "dataframe", "shape": [500, 3], "columns": ["customer_id", "name", "segment"]}` |
-
-**ANALYST:** Now I'll merge and aggregate profit by segment.
-
-| Tool Call | Response |
-|-----------|----------|
-| `merge(left="@a3f2", right="@b4c3", on="customer_id")` | `{"ref": "@c5d6", ...}` |
-| `groupby_agg(df="@c5d6", by=["segment"], agg={"profit": "sum"})` | `{"ref": "@d7e8", ...}` |
-| `sort_values(df="@d7e8", by="profit", ascending=false)` | `{"ref": "@e9f0", ...}` |
-| `peek(ref="@e9f0")` | `{"type": "dataframe", "shape": [3, 2], "columns": ["segment", "profit"]}` |
-
-**ANALYST:** Enterprise is most profitable at $1.2M, followed by SMB at $800K and Consumer at $450K.
+| Step | Tool Call | Response |
+|:----:|-----------|----------|
+| 1 | `load_csv(path="orders.csv")` | `@a3f2` |
+| 2 | `load_csv(path="customers.csv")` | `@b4c3` |
+| 3 | `peek(ref="@a3f2")` | `shape: [10000, 4], columns: [order_id, customer_id, quantity, profit]` |
+| 4 | `peek(ref="@b4c3")` | `shape: [500, 3], columns: [customer_id, name, segment]` |
+| 5 | `merge(left="@a3f2", right="@b4c3", on="customer_id")` | `@c5d6` |
+| 6 | `groupby_agg(df="@c5d6", by=["segment"], agg={"profit": "sum"})` | `@d7e8` |
+| 7 | `sort_values(df="@d7e8", by="profit", ascending=false)` | `@e9f0` |
+| 8 | `peek(ref="@e9f0")` | `shape: [3, 2], columns: [segment, profit]` |
 
 The LLM orchestrated a multi-join, aggregation, and sort without ever seeing the underlying data. Your code then resolves the final ref:
+
 ```python
 result = phantom.resolve("@e9f0")
 ```
