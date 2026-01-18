@@ -1,14 +1,14 @@
-<svg width="320" height="70" viewBox="0 0 320 70" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="70" height="70" viewBox="0 0 70 70" fill="none" xmlns="http://www.w3.org/2000/svg">
 
   <defs>
     <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#06B6D4"/>
-      <stop offset="50%" stop-color="#8B5CF6"/>
-      <stop offset="100%" stop-color="#EC4899"/>
+      <stop offset="0%" stop-color="#0EA5E9"/>
+      <stop offset="50%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#6366F1"/>
     </linearGradient>
     <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#06B6D4"/>
-      <stop offset="100%" stop-color="#8B5CF6"/>
+      <stop offset="0%" stop-color="#0EA5E9"/>
+      <stop offset="100%" stop-color="#6366F1"/>
     </linearGradient>
     <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
       <feGaussianBlur stdDeviation="2" result="blur"/>
@@ -19,11 +19,9 @@
     </filter>
   </defs>
 
-  <g transform="translate(28, 10) scale(0.76)" filter="url(#glow)">
+  <g transform="translate(2, 2)">
     <rect x="0" y="0" width="66" height="66" rx="18" fill="url(#grad)"/>
     <path d="M33 16C24.2 16 17 23.2 17 32V48C17 50.2 18.8 52 21 52H23V46C23 44.3 24.3 43 26 43C27.7 43 29 44.3 29 46V52H31V42C31 40.3 32.3 39 34 39C35.7 39 37 40.3 37 42V52H39V46C39 44.3 40.3 43 42 43C43.7 43 45 44.3 45 46V52H47C49.2 52 51 50.2 51 48V32C51 23.2 43.8 16 35 16H33Z" fill="white" opacity="0.95"/>
   </g>
-
-  <text x="93" y="49" font-family="'Nunito', 'Nunito Sans', 'Quicksand', sans-serif" font-size="42" font-weight="700" letter-spacing="0" fill="url(#textGrad)">phantom</text>
 
 </svg>
