@@ -7,6 +7,7 @@ from typing import Any, TypeVar
 
 from ._ref import Ref
 from ._registry import get_operation
+from ._resolve import aresolve as _aresolve
 from ._resolve import resolve as _resolve
 from ._result import ToolResult
 
@@ -93,6 +94,24 @@ class Session:
         if isinstance(ref, str):
             ref = self.get(ref)
         return _resolve(ref)
+
+    async def aresolve(self, ref: Ref[Any] | str, *, parallel: bool = True) -> Any:
+        """
+        Resolve a ref asynchronously with optional parallel execution.
+
+        When parallel=True, independent branches of the DAG execute concurrently.
+        This can significantly speed up I/O-bound workflows.
+
+        Args:
+            ref: The ref to resolve (or ref ID string)
+            parallel: If True, execute independent branches concurrently
+
+        Returns:
+            The concrete value produced by the operation
+        """
+        if isinstance(ref, str):
+            ref = self.get(ref)
+        return await _aresolve(ref, parallel=parallel)
 
     def list_refs(self) -> list[Ref[Any]]:
         """List all refs in this session."""

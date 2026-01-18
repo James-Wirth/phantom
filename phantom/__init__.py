@@ -29,7 +29,7 @@ Example:
 from typing import Any, TypeVar
 
 from ._errors import CycleError, ResolutionError
-from ._inspect import inspector, peek
+from ._inspect import apeek, inspector, peek
 from ._ref import Ref
 from ._registry import (
     clear,
@@ -42,7 +42,7 @@ from ._registry import (
     op,
     register_ref,
 )
-from ._resolve import resolve
+from ._resolve import aresolve, resolve
 from ._result import ToolResult
 from ._serialize import deserialize_graph, load_graph, save_graph, serialize_graph
 from ._session import Session
@@ -63,7 +63,9 @@ __all__ = [
     "ref_from_tool_call",
     "handle_tool_call",
     "resolve",
+    "aresolve",
     "peek",
+    "apeek",
     "get",
     # Registry
     "list_operations",

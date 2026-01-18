@@ -7,7 +7,7 @@ from typing import Any
 
 from ._ref import Ref
 from ._registry import get_ref
-from ._resolve import resolve
+from ._resolve import aresolve, resolve
 
 _inspectors: dict[type, Callable[[Any], dict[str, Any]]] = {}
 
@@ -63,6 +63,37 @@ def peek(ref: Ref[Any] | str) -> dict[str, Any]:
         ref = get_ref(ref)
 
     value = resolve(ref)
+    info = _inspect_value(value)
+
+    return {
+        "ref": ref.id,
+        "op": ref.op,
+        "parents": [p.id for p in ref.parents],
+        **info,
+    }
+
+
+async def apeek(ref: Ref[Any] | str) -> dict[str, Any]:
+    """
+    Async version of peek.
+
+    Forces async resolution, then runs the appropriate inspector.
+    Returns a dict with ref metadata plus inspector output.
+
+    Args:
+        ref: The ref to peek at (or ref ID string)
+
+    Returns:
+        Dict containing ref info and inspector output
+
+    Example:
+        data_ref = phantom.ref("fetch_data", url="https://api.example.com")
+        info = await phantom.apeek(data_ref)
+    """
+    if isinstance(ref, str):
+        ref = get_ref(ref)
+
+    value = await aresolve(ref)
     info = _inspect_value(value)
 
     return {
