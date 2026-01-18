@@ -1,8 +1,12 @@
-# Phantom
+<p align="center">
+  <img src="assets/logo.svg" alt="Phantom" width="500">
+</p>
 
-[![CI](https://github.com/James-Wirth/phantom/actions/workflows/ci.yml/badge.svg)](https://github.com/James-Wirth/phantom/actions/workflows/ci.yml)
+<h3 align="left">Phantom: Let LLMs orchestrate data pipelines without seeing the data.</h3>
 
-**Let LLMs orchestrate data pipelines without seeing the data.**
+<p align="left">
+  <a href="https://github.com/James-Wirth/phantom/actions/workflows/ci.yml"><img src="https://github.com/James-Wirth/phantom/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
 Phantom creates a symbolic layer between your LLM and your data. The LLM reasons with opaque references (`@a3f2`) and builds a computation graph, while your code holds the actual data in memory. When you're ready, `resolve()` executes the graph and returns the result.
 

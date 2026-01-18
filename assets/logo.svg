@@ -1,0 +1,24 @@
+<svg width="340" height="90" viewBox="0 0 340 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5B21B6"/>
+      <stop offset="100%" stop-color="#5B21B6"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="1.2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g transform="translate(5, 10) scale(0.75)">
+    <path d="M42 18C28 18 16 30 16 44V68C16 72 18 74 22 74H26V64C26 62 28 60 30 60C32 60 34 62 34 64V74H38V58C38 56 40 54 42 54C44 54 46 56 46 58V74H50V64C50 62 52 60 54 60C56 60 58 62 58 64V74H62C66 74 68 72 68 68V44C68 30 56 18 42 18Z" fill="url(#grad)" filter="url(#glow)"/>
+    <circle cx="42" cy="40" r="6" fill="white" opacity="0.9"/>
+  </g>
+
+  <text x="75" y="62" font-family="Inter, SF Pro Display, -apple-system, system-ui, sans-serif" font-size="54" font-weight="600" letter-spacing="1" fill="#5B21B6" filter="url(#glow)">phantom</text>
+
+</svg>
