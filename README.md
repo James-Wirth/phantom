@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="Phantom" width="500">
+  <img src="assets/logo.svg" alt="Phantom" width="400">
 </p>
+
+---
 
 <h3 align="left">Phantom: Let LLMs orchestrate data pipelines without seeing the data.</h3>
 
