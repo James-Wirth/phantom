@@ -28,6 +28,7 @@ Example:
 
 from typing import Any, TypeVar
 
+from ._errors import CycleError, ResolutionError
 from ._inspect import inspector, peek
 from ._ref import Ref
 from ._registry import (
@@ -46,6 +47,9 @@ from ._resolve import resolve
 __all__ = [
     # Core types
     "Ref",
+    # Errors
+    "ResolutionError",
+    "CycleError",
     # Decorators
     "op",
     "inspector",
