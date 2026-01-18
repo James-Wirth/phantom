@@ -126,11 +126,15 @@ def _python_type_to_json_schema(type_name: str) -> str:
     return mapping.get(type_name, "string")
 
 
-def get_openai_tools() -> list[dict[str, Any]]:
+def get_openai_tools(include_peek: bool = True) -> list[dict[str, Any]]:
     """
     Generate OpenAI-compatible tool definitions for all registered operations.
 
-    Returns a list ready to pass to the OpenAI API's `tools` parameter.
+    Args:
+        include_peek: Whether to include the peek tool (default True)
+
+    Returns:
+        A list ready to pass to the OpenAI API's `tools` parameter.
 
     Example:
         @phantom.op
@@ -179,6 +183,27 @@ def get_openai_tools() -> list[dict[str, Any]]:
                     "type": "object",
                     "properties": properties,
                     "required": required,
+                },
+            },
+        })
+
+    if include_peek:
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "peek",
+                "description": "Inspect a ref to see its type, shape, columns, and sample data. "
+                              "Use this to understand data structure before transforming it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "ref": {
+                            "type": "string",
+                            "description": "The ref ID to inspect (e.g., '@abc123')",
+                            "pattern": "^@[a-f0-9]+$",
+                        }
+                    },
+                    "required": ["ref"],
                 },
             },
         })

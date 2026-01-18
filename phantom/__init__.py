@@ -31,6 +31,7 @@ from typing import Any, TypeVar
 from ._errors import CycleError, ResolutionError
 from ._inspect import inspector, peek
 from ._ref import Ref
+from ._result import ToolResult
 from ._session import Session
 from ._registry import (
     clear,
@@ -49,6 +50,7 @@ from ._serialize import deserialize_graph, load_graph, save_graph, serialize_gra
 __all__ = [
     # Core types
     "Ref",
+    "ToolResult",
     "Session",
     # Errors
     "ResolutionError",
@@ -59,6 +61,7 @@ __all__ = [
     # Functions
     "ref",
     "ref_from_tool_call",
+    "handle_tool_call",
     "resolve",
     "peek",
     "get",
@@ -146,3 +149,37 @@ def ref_from_tool_call(op_name: str, arguments: dict[str, Any]) -> Ref[Any]:
             resolved_args[key] = value
 
     return ref(op_name, **resolved_args)
+
+
+def handle_tool_call(name: str, arguments: dict[str, Any]) -> ToolResult:
+    """
+    Handle any LLM tool call, including peek.
+
+    This is the recommended single entry point for processing tool calls.
+    It handles both lazy operations (which create refs) and eager operations
+    like peek (which resolve and inspect immediately).
+
+    Args:
+        name: Tool/operation name from LLM
+        arguments: Arguments dict from LLM (may contain "@ref_id" strings)
+
+    Returns:
+        ToolResult that can be serialized back to the LLM
+
+    Example:
+        for tool_call in response.tool_calls:
+            result = phantom.handle_tool_call(
+                tool_call.function.name,
+                json.loads(tool_call.function.arguments)
+            )
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(result.to_dict())
+            })
+    """
+    if name == "peek":
+        ref_id = arguments.get("ref") or arguments.get("ref_id")
+        return ToolResult.from_peek(peek(get_ref(ref_id)))
+    else:
+        return ToolResult.from_ref(ref_from_tool_call(name, arguments))

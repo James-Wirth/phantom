@@ -8,6 +8,7 @@ from typing import Any, TypeVar
 from ._ref import Ref
 from ._registry import get_operation
 from ._resolve import resolve as _resolve
+from ._result import ToolResult
 
 T = TypeVar("T")
 
@@ -120,6 +121,41 @@ class Session:
                 resolved_args[key] = value
 
         return self.ref(op_name, **resolved_args)
+
+    def handle_tool_call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        """
+        Handle any LLM tool call within this session.
+
+        This is the recommended single entry point for processing tool calls.
+        It handles both lazy operations (which create refs) and eager operations
+        like peek (which resolve and inspect immediately).
+
+        Args:
+            name: Tool/operation name from LLM
+            arguments: Arguments dict (may contain "@ref_id" strings)
+
+        Returns:
+            ToolResult that can be serialized back to the LLM
+
+        Example:
+            for tool_call in response.tool_calls:
+                result = session.handle_tool_call(
+                    tool_call.function.name,
+                    json.loads(tool_call.function.arguments)
+                )
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(result.to_dict())
+                })
+        """
+        from ._inspect import peek
+
+        if name == "peek":
+            ref_id = arguments.get("ref") or arguments.get("ref_id")
+            return ToolResult.from_peek(peek(self.get(ref_id)))
+        else:
+            return ToolResult.from_ref(self.ref_from_tool_call(name, arguments))
 
     def __repr__(self) -> str:
         return f"Session({self.id!r}, refs={len(self._refs)})"
