@@ -31,6 +31,7 @@ from typing import Any, TypeVar
 from ._errors import CycleError, ResolutionError
 from ._inspect import inspector, peek
 from ._ref import Ref
+from ._session import Session
 from ._registry import (
     clear,
     get_openai_tools,
@@ -47,6 +48,7 @@ from ._resolve import resolve
 __all__ = [
     # Core types
     "Ref",
+    "Session",
     # Errors
     "ResolutionError",
     "CycleError",
