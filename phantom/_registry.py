@@ -74,7 +74,7 @@ def get_operation_signature(name: str) -> dict[str, Any]:
         param_info: dict[str, Any] = {}
         if param_name in hints:
             type_hint = hints[param_name]
-            param_info["type_hint"] = type_hint 
+            param_info["type_hint"] = type_hint
             if hasattr(type_hint, "__name__"):
                 param_info["type"] = type_hint.__name__
             else:
@@ -134,16 +134,19 @@ def validate_args(op_name: str, args: dict[str, Any]) -> list[str]:
         param_info = params[arg_name]
         if param_info.get("is_ref"):
             if not isinstance(arg_value, Ref):
+                actual = type(arg_value).__name__
                 warnings.append(
-                    f"Parameter '{arg_name}' expects a Ref, got {type(arg_value).__name__}"
+                    f"Parameter '{arg_name}' expects a Ref, got {actual}"
                 )
         else:
             expected_type = param_info.get("type", "")
             actual_type = type(arg_value).__name__
-            if expected_type in ("str", "int", "float", "bool") and actual_type != expected_type:
+            primitive_types = ("str", "int", "float", "bool")
+            if expected_type in primitive_types and actual_type != expected_type:
                 if actual_type != "str":
                     warnings.append(
-                        f"Parameter '{arg_name}' expects {expected_type}, got {actual_type}"
+                        f"Parameter '{arg_name}' expects {expected_type}, "
+                        f"got {actual_type}"
                     )
 
     return warnings

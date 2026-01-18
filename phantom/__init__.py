@@ -184,6 +184,8 @@ def handle_tool_call(name: str, arguments: dict[str, Any]) -> ToolResult:
     """
     if name == "peek":
         ref_id = arguments.get("ref") or arguments.get("ref_id")
+        if ref_id is None:
+            raise ValueError("peek requires a 'ref' or 'ref_id' argument")
         return ToolResult.from_peek(peek(get_ref(ref_id)))
     else:
         return ToolResult.from_ref(ref_from_tool_call(name, arguments))

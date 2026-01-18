@@ -62,7 +62,9 @@ class ToolResult:
             kind="error",
             data={
                 "error": True,
-                "type": type(error.cause).__name__ if error.cause else "ResolutionError",
+                "type": (
+                    type(error.cause).__name__ if error.cause else "ResolutionError"
+                ),
                 "message": str(error.cause) if error.cause else str(error),
                 "ref": error.ref.id,
                 "op": error.ref.op,
