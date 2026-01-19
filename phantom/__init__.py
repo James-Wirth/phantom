@@ -29,6 +29,7 @@ Example:
 from typing import Any, TypeVar
 
 from ._errors import CycleError, ResolutionError
+from ._hooks import clear_hooks, list_hooks, on
 from ._inspect import apeek, inspector, peek
 from ._ref import Ref
 from ._registry import (
@@ -59,6 +60,7 @@ __all__ = [
     # Decorators
     "op",
     "inspector",
+    "on",
     # Functions
     "ref",
     "ref_from_tool_call",
@@ -68,6 +70,10 @@ __all__ = [
     "peek",
     "apeek",
     "get",
+    "explain",
+    # Hooks
+    "clear_hooks",
+    "list_hooks",
     # Registry
     "list_operations",
     "list_refs",
@@ -189,3 +195,25 @@ def handle_tool_call(name: str, arguments: dict[str, Any]) -> ToolResult:
         return ToolResult.from_peek(peek(get_ref(ref_id)))
     else:
         return ToolResult.from_ref(ref_from_tool_call(name, arguments))
+
+
+def explain(ref: Ref[Any]) -> str:
+    """
+    Show what a ref will compute.
+
+    Displays the computation graph as a tree, with the ref at the root
+    and its dependencies indented below.
+
+    Args:
+        ref: The ref to explain
+
+    Returns:
+        A multi-line string showing the computation tree
+
+    Example:
+        >>> print(phantom.explain(final_ref))
+        @a3f2: summarize(data=@b1c4)
+          @b1c4: filter(data=@c5d6, condition='amount > 100')
+            @c5d6: load(source='sales.csv')
+    """
+    return ref.explain()

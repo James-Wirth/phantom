@@ -44,6 +44,43 @@ class Ref(Generic[T]):
             "meta": self.meta,
         }
 
+    def explain(self, indent: int = 0) -> str:
+        """
+        Human-readable explanation of what this ref will compute.
+
+        Shows the computation graph as a tree, with this ref at the root
+        and its dependencies indented below.
+
+        Args:
+            indent: Current indentation level (for recursive calls)
+
+        Returns:
+            A multi-line string showing the computation tree
+
+        Example:
+            >>> ref = phantom.ref("summarize", data=filtered_data)
+            >>> print(ref.explain())
+            @a3f2: summarize(data=@b1c4)
+              @b1c4: filter(data=@c5d6, condition='amount > 100')
+                @c5d6: load(source='sales.csv')
+        """
+        lines = []
+        prefix = "  " * indent
+        lines.append(f"{prefix}{self.id}: {self.op}({self._format_args()})")
+        for parent in self.parents:
+            lines.append(parent.explain(indent + 1))
+        return "\n".join(lines)
+
+    def _format_args(self) -> str:
+        """Format args for explain() output."""
+        parts = []
+        for k, v in self.args.items():
+            if isinstance(v, Ref):
+                parts.append(f"{k}={v.id}")
+            else:
+                parts.append(f"{k}={v!r}")
+        return ", ".join(parts)
+
     def __repr__(self) -> str:
         return self.id
 

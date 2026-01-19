@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any, TypeVar
 
 from ._errors import ResolutionError
+from ._hooks import emit
 from ._ref import Ref
 from ._registry import get_operation, get_operation_signature
-from ._resolve import aresolve as _aresolve
-from ._resolve import resolve as _resolve
+from ._resolve import _group_by_level, _topological_order
 from ._result import ToolResult
 
 T = TypeVar("T")
@@ -38,15 +39,23 @@ class Session:
         # other_session.get(data.id) would raise KeyError
     """
 
-    def __init__(self, session_id: str | None = None):
+    def __init__(
+        self,
+        session_id: str | None = None,
+        allowed_ops: set[str] | None = None,
+    ):
         """
         Create a new isolated session.
 
         Args:
             session_id: Optional custom ID. Auto-generated if not provided.
+            allowed_ops: If provided, only these operations can be used.
+                        None means all operations are allowed.
         """
         self.id = session_id or f"session_{uuid.uuid4().hex[:8]}"
         self._refs: dict[str, Ref[Any]] = {}
+        self._value_cache: dict[str, Any] = {}  # Persistent cache for resolved values
+        self._allowed_ops = allowed_ops
 
     def ref(self, op_name: str, **kwargs: Any) -> Ref[Any]:
         """
@@ -58,7 +67,16 @@ class Session:
 
         Returns:
             A Ref registered in this session
+
+        Raises:
+            PermissionError: If op_name is not in allowed_ops (when set)
         """
+        if self._allowed_ops is not None and op_name not in self._allowed_ops:
+            raise PermissionError(
+                f"Operation '{op_name}' is not allowed in this session. "
+                f"Allowed operations: {sorted(self._allowed_ops)}"
+            )
+
         get_operation(op_name)
 
         new_ref: Ref[Any] = Ref(op=op_name, args=kwargs)
@@ -92,6 +110,10 @@ class Session:
         """
         Resolve a ref to its concrete value.
 
+        Uses the session's persistent cache to avoid re-computing values.
+        If a ref has already been resolved in this session, returns the
+        cached value immediately.
+
         Args:
             ref: The ref to resolve (or ref ID string)
 
@@ -100,33 +122,274 @@ class Session:
         """
         if isinstance(ref, str):
             ref = self.get(ref)
-        return _resolve(ref)
+        return self._resolve_with_cache(ref)
 
-    async def aresolve(self, ref: Ref[Any] | str, *, parallel: bool = True) -> Any:
+    def _resolve_with_cache(self, ref: Ref[Any]) -> Any:
+        """Resolve using session's persistent cache."""
+        order = _topological_order(ref)
+
+        for node in order:
+            if node.id in self._value_cache:
+                continue
+
+            resolved_args: dict[str, Any] = {}
+            for key, value in node.args.items():
+                if isinstance(value, Ref):
+                    resolved_args[key] = self._value_cache[value.id]
+                else:
+                    resolved_args[key] = value
+
+            try:
+                op_func = get_operation(node.op)
+            except KeyError as e:
+                chain = [r.id for r in order[: order.index(node) + 1]]
+                raise ResolutionError(
+                    f"Unknown operation: {node.op}",
+                    node,
+                    chain,
+                    e,
+                ) from e
+
+            emit("before_resolve", ref=node, args=resolved_args)
+
+            try:
+                result = op_func(**resolved_args)
+            except Exception as e:
+                emit("on_error", ref=node, error=e)
+                chain = [r.id for r in order[: order.index(node) + 1]]
+                raise ResolutionError(
+                    f"Operation '{node.op}' failed: {e}",
+                    node,
+                    chain,
+                    e,
+                ) from e
+
+            emit("after_resolve", ref=node, result=result)
+            self._value_cache[node.id] = result
+
+        return self._value_cache[ref.id]
+
+    async def aresolve(
+        self,
+        ref: Ref[Any] | str,
+        *,
+        parallel: bool = True,
+        timeout: float | None = None,
+    ) -> Any:
         """
         Resolve a ref asynchronously with optional parallel execution.
 
+        Uses the session's persistent cache to avoid re-computing values.
         When parallel=True, independent branches of the DAG execute concurrently.
-        This can significantly speed up I/O-bound workflows.
 
         Args:
             ref: The ref to resolve (or ref ID string)
             parallel: If True, execute independent branches concurrently
+            timeout: Optional timeout in seconds. Raises TimeoutError if exceeded.
 
         Returns:
             The concrete value produced by the operation
         """
         if isinstance(ref, str):
             ref = self.get(ref)
-        return await _aresolve(ref, parallel=parallel)
+
+        if timeout is not None:
+            return await asyncio.wait_for(
+                self._aresolve_with_cache(ref, parallel=parallel),
+                timeout=timeout,
+            )
+        return await self._aresolve_with_cache(ref, parallel=parallel)
+
+    async def _aresolve_with_cache(
+        self, ref: Ref[Any], *, parallel: bool = True
+    ) -> Any:
+        """Async resolve using session's persistent cache."""
+        order = _topological_order(ref)
+
+        if parallel:
+            levels = _group_by_level(order)
+            for level in levels:
+                # Filter out already-cached nodes
+                to_execute = [n for n in level if n.id not in self._value_cache]
+                if not to_execute:
+                    continue
+
+                if len(to_execute) == 1:
+                    await self._execute_one_async(to_execute[0], order)
+                else:
+                    await asyncio.gather(*[
+                        self._execute_one_async(node, order) for node in to_execute
+                    ])
+        else:
+            for node in order:
+                if node.id not in self._value_cache:
+                    await self._execute_one_async(node, order)
+
+        return self._value_cache[ref.id]
+
+    async def _execute_one_async(self, node: Ref[Any], order: list[Ref[Any]]) -> None:
+        """Execute a single operation asynchronously."""
+        resolved_args: dict[str, Any] = {}
+        for key, value in node.args.items():
+            if isinstance(value, Ref):
+                resolved_args[key] = self._value_cache[value.id]
+            else:
+                resolved_args[key] = value
+
+        try:
+            op_func = get_operation(node.op)
+        except KeyError as e:
+            chain = [r.id for r in order[: order.index(node) + 1]]
+            raise ResolutionError(
+                f"Unknown operation: {node.op}",
+                node,
+                chain,
+                e,
+            ) from e
+
+        emit("before_resolve", ref=node, args=resolved_args)
+
+        try:
+            if asyncio.iscoroutinefunction(op_func):
+                result = await op_func(**resolved_args)
+            else:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None, lambda: op_func(**resolved_args)
+                )
+        except ResolutionError:
+            raise
+        except Exception as e:
+            emit("on_error", ref=node, error=e)
+            chain = [r.id for r in order[: order.index(node) + 1]]
+            raise ResolutionError(
+                f"Operation '{node.op}' failed: {e}",
+                node,
+                chain,
+                e,
+            ) from e
+
+        emit("after_resolve", ref=node, result=result)
+        self._value_cache[node.id] = result
 
     def list_refs(self) -> list[Ref[Any]]:
         """List all refs in this session."""
         return list(self._refs.values())
 
+    def get_tools(
+        self, format: str = "openai", include_peek: bool = True
+    ) -> list[dict[str, Any]]:
+        """
+        Get tool definitions, filtered to allowed operations.
+
+        If allowed_ops was set at session creation, only those operations
+        are included. Otherwise, all registered operations are included.
+
+        Args:
+            format: The schema format to use. Options: "openai", "anthropic"
+            include_peek: Whether to include the peek tool (default True)
+
+        Returns:
+            A list of tool definitions in the specified format.
+        """
+        from ._registry import get_tools as _get_tools
+
+        all_tools = _get_tools(format=format, include_peek=include_peek)
+
+        if self._allowed_ops is None:
+            return all_tools
+
+        filtered = []
+        for tool in all_tools:
+            if format == "openai":
+                name = tool.get("function", {}).get("name", "")
+            else:
+                name = tool.get("name", "")
+
+            if name == "peek" and include_peek:
+                filtered.append(tool)
+            elif name in self._allowed_ops:
+                filtered.append(tool)
+
+        return filtered
+
     def clear(self) -> None:
-        """Clear all refs from this session."""
+        """Clear all refs and cached values from this session."""
         self._refs.clear()
+        self._value_cache.clear()
+
+    def invalidate(self, ref_id: str | None = None) -> None:
+        """
+        Invalidate cached values.
+
+        Args:
+            ref_id: If provided, only invalidate this ref's cached value.
+                   If None, clear all cached values.
+
+        Note:
+            This does not invalidate dependent refs. If you invalidate a ref
+            that other refs depend on, you should invalidate those too or
+            call invalidate() with no arguments to clear everything.
+        """
+        if ref_id is not None:
+            self._value_cache.pop(ref_id, None)
+        else:
+            self._value_cache.clear()
+
+    def peek(self, ref: Ref[Any] | str) -> dict[str, Any]:
+        """
+        Peek at a ref's resolved value and return info about it.
+
+        Uses the session's cache, so repeated peeks are instant.
+        This is the recommended way to inspect refs in a session.
+
+        Args:
+            ref: The ref to peek at (or ref ID string)
+
+        Returns:
+            Dict containing ref info and inspector output
+        """
+        from ._inspect import _inspect_value
+
+        if isinstance(ref, str):
+            ref = self.get(ref)
+
+        value = self.resolve(ref)
+        info = _inspect_value(value)
+
+        return {
+            "ref": ref.id,
+            "op": ref.op,
+            "parents": [p.id for p in ref.parents],
+            **info,
+        }
+
+    async def apeek(self, ref: Ref[Any] | str) -> dict[str, Any]:
+        """
+        Async version of peek.
+
+        Uses the session's cache, so repeated peeks are instant.
+
+        Args:
+            ref: The ref to peek at (or ref ID string)
+
+        Returns:
+            Dict containing ref info and inspector output
+        """
+        from ._inspect import _inspect_value
+
+        if isinstance(ref, str):
+            ref = self.get(ref)
+
+        value = await self.aresolve(ref)
+        info = _inspect_value(value)
+
+        return {
+            "ref": ref.id,
+            "op": ref.op,
+            "parents": [p.id for p in ref.parents],
+            **info,
+        }
 
     def ref_from_tool_call(
         self, op_name: str, arguments: dict[str, Any], *, coerce_types: bool = True
@@ -190,6 +453,8 @@ class Session:
         It handles both lazy operations (which create refs) and eager operations
         like peek (which resolve and inspect immediately).
 
+        Uses the session's cache, so repeated peeks are instant.
+
         Args:
             name: Tool/operation name from LLM
             arguments: Arguments dict (may contain "@ref_id" strings)
@@ -212,12 +477,12 @@ class Session:
                     "content": json.dumps(result.to_dict())
                 })
         """
-        from ._inspect import peek
-
         try:
             if name == "peek":
                 ref_id = arguments.get("ref") or arguments.get("ref_id")
-                return ToolResult.from_peek(peek(self.get(ref_id)))
+                if ref_id is None:
+                    raise ValueError("peek requires a 'ref' or 'ref_id' argument")
+                return ToolResult.from_peek(self.peek(ref_id))
             else:
                 return ToolResult.from_ref(self.ref_from_tool_call(name, arguments))
         except ResolutionError as e:
