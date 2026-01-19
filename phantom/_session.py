@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 from ._errors import ResolutionError
-from ._hooks import emit
+from ._graph import group_by_level, topological_order
 from ._ref import Ref
 from ._registry import get_operation, get_operation_signature
-from ._resolve import _group_by_level, _topological_order
 from ._result import ToolResult
 
 T = TypeVar("T")
@@ -54,8 +54,14 @@ class Session:
         """
         self.id = session_id or f"session_{uuid.uuid4().hex[:8]}"
         self._refs: dict[str, Ref[Any]] = {}
-        self._value_cache: dict[str, Any] = {}  # Persistent cache for resolved values
+        self._value_cache: dict[str, Any] = {}
         self._allowed_ops = allowed_ops
+
+        self._hooks: dict[str, list[Callable[..., None]]] = {
+            "before_resolve": [],
+            "after_resolve": [],
+            "on_error": [],
+        }
 
     def ref(self, op_name: str, **kwargs: Any) -> Ref[Any]:
         """
@@ -126,7 +132,7 @@ class Session:
 
     def _resolve_with_cache(self, ref: Ref[Any]) -> Any:
         """Resolve using session's persistent cache."""
-        order = _topological_order(ref)
+        order = topological_order(ref)
 
         for node in order:
             if node.id in self._value_cache:
@@ -150,12 +156,12 @@ class Session:
                     e,
                 ) from e
 
-            emit("before_resolve", ref=node, args=resolved_args)
+            self._emit("before_resolve", ref=node, args=resolved_args)
 
             try:
                 result = op_func(**resolved_args)
             except Exception as e:
-                emit("on_error", ref=node, error=e)
+                self._emit("on_error", ref=node, error=e)
                 chain = [r.id for r in order[: order.index(node) + 1]]
                 raise ResolutionError(
                     f"Operation '{node.op}' failed: {e}",
@@ -164,7 +170,7 @@ class Session:
                     e,
                 ) from e
 
-            emit("after_resolve", ref=node, result=result)
+            self._emit("after_resolve", ref=node, result=result)
             self._value_cache[node.id] = result
 
         return self._value_cache[ref.id]
@@ -204,10 +210,10 @@ class Session:
         self, ref: Ref[Any], *, parallel: bool = True
     ) -> Any:
         """Async resolve using session's persistent cache."""
-        order = _topological_order(ref)
+        order = topological_order(ref)
 
         if parallel:
-            levels = _group_by_level(order)
+            levels = group_by_level(order)
             for level in levels:
                 # Filter out already-cached nodes
                 to_execute = [n for n in level if n.id not in self._value_cache]
@@ -247,7 +253,7 @@ class Session:
                 e,
             ) from e
 
-        emit("before_resolve", ref=node, args=resolved_args)
+        self._emit("before_resolve", ref=node, args=resolved_args)
 
         try:
             if asyncio.iscoroutinefunction(op_func):
@@ -260,7 +266,7 @@ class Session:
         except ResolutionError:
             raise
         except Exception as e:
-            emit("on_error", ref=node, error=e)
+            self._emit("on_error", ref=node, error=e)
             chain = [r.id for r in order[: order.index(node) + 1]]
             raise ResolutionError(
                 f"Operation '{node.op}' failed: {e}",
@@ -269,7 +275,7 @@ class Session:
                 e,
             ) from e
 
-        emit("after_resolve", ref=node, result=result)
+        self._emit("after_resolve", ref=node, result=result)
         self._value_cache[node.id] = result
 
     def list_refs(self) -> list[Ref[Any]]:
@@ -317,6 +323,74 @@ class Session:
         """Clear all refs and cached values from this session."""
         self._refs.clear()
         self._value_cache.clear()
+
+    def on(self, event: str) -> Callable[[Callable[..., None]], Callable[..., None]]:
+        """
+        Register a session-scoped hook for resolution events.
+
+        Available events:
+            - "before_resolve": Called before each operation executes
+              Signature: (ref: Ref, args: dict[str, Any]) -> None
+
+            - "after_resolve": Called after each operation completes successfully
+              Signature: (ref: Ref, result: Any) -> None
+
+            - "on_error": Called when an operation fails
+              Signature: (ref: Ref, error: Exception) -> None
+
+        Example:
+            session = phantom.Session()
+
+            @session.on("before_resolve")
+            def log_start(ref, args):
+                print(f"Starting {ref.op}...")
+
+            @session.on("after_resolve")
+            def log_done(ref, result):
+                print(f"Finished {ref.op}")
+        """
+        if event not in self._hooks:
+            raise ValueError(
+                f"Unknown event: {event}. Valid events: {list(self._hooks.keys())}"
+            )
+
+        def decorator(fn: Callable[..., None]) -> Callable[..., None]:
+            self._hooks[event].append(fn)
+            return fn
+
+        return decorator
+
+    def _emit(self, event: str, **kwargs: Any) -> None:
+        """Emit event to session's hooks."""
+        for hook in self._hooks.get(event, []):
+            try:
+                hook(**kwargs)
+            except Exception:
+                pass
+
+    def clear_hooks(self, event: str | None = None) -> None:
+        """
+        Clear session's hooks.
+
+        Args:
+            event: If provided, clear only this event's hooks.
+                   If None, clear all hooks.
+        """
+        if event is not None:
+            if event in self._hooks:
+                self._hooks[event].clear()
+        else:
+            for handlers in self._hooks.values():
+                handlers.clear()
+
+    def list_hooks(self) -> dict[str, int]:
+        """
+        List the number of registered hooks per event in this session.
+
+        Returns:
+            Dict mapping event names to hook counts
+        """
+        return {event: len(handlers) for event, handlers in self._hooks.items()}
 
     def invalidate(self, ref_id: str | None = None) -> None:
         """
