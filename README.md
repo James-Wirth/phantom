@@ -77,7 +77,9 @@ import openai
 import phantom
 
 client = openai.OpenAI()
-tools = phantom.get_tools()  # or format="anthropic" for Claude  
+
+session = phantom.Session()
+tools = session.get_tools()  # or format="anthropic" for Claude
 
 messages = [{"role": "user", "content": "What's our most profitable segment by region?"}]
 
@@ -92,7 +94,7 @@ while True:
     if message.tool_calls:
         messages.append(message)
         for tool_call in message.tool_calls:
-            result = phantom.handle_tool_call(
+            result = session.handle_tool_call(
                 tool_call.function.name,
                 json.loads(tool_call.function.arguments)
             )
@@ -105,7 +107,7 @@ while True:
         break
 
 # Execute the pipeline the LLM built
-final_data = phantom.resolve(result.ref)
+final_data = session.resolve(result.ref)
 ```
 
 `handle_tool_call` returns refs for lazy operations and immediate results for `peek`. The LLM sees just enough to make decisions.
@@ -132,7 +134,7 @@ The LLM doesn't need to see 10,000 rows of data to answer this. It needs to know
 The LLM orchestrated a multi-join, aggregation, and sort without ever seeing the underlying data. Your code then resolves the final ref:
 
 ```python
-result = phantom.resolve("@e9f0")
+result = session.resolve("@e9f0")
 ```
 
 ## Key Features
@@ -178,5 +180,5 @@ except ResolutionError as e:
 ### Async Support
 For I/O-bound operations, use `aresolve()` with parallel execution:
 ```python
-result = await phantom.aresolve(ref, parallel=True)  
+result = await session.aresolve(ref, parallel=True)
 ```
