@@ -20,7 +20,6 @@ def _is_ref_type(type_hint: Any) -> bool:
     return origin is Ref
 
 _operations: dict[str, Callable[..., Any]] = {}
-_refs: dict[str, Ref[Any]] = {}
 
 
 def op(func: Callable[..., T]) -> Callable[..., T]:
@@ -150,29 +149,6 @@ def validate_args(op_name: str, args: dict[str, Any]) -> list[str]:
                     )
 
     return warnings
-
-
-def register_ref(ref: Ref[T]) -> Ref[T]:
-    """Store a ref in the global registry."""
-    _refs[ref.id] = ref
-    return ref
-
-
-def get_ref(ref_id: str) -> Ref[Any]:
-    """Retrieve a ref by ID."""
-    if ref_id not in _refs:
-        raise KeyError(f"Unknown ref: {ref_id}")
-    return _refs[ref_id]
-
-
-def list_refs() -> list[Ref[Any]]:
-    """List all registered refs."""
-    return list(_refs.values())
-
-
-def clear() -> None:
-    """Clear all refs (useful for testing)."""
-    _refs.clear()
 
 
 def _python_type_to_json_schema(type_name: str) -> str:
