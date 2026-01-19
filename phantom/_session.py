@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Callable
+from concurrent.futures import Executor
 from typing import Any, TypeVar
 
 from ._errors import ResolutionError
@@ -14,6 +16,7 @@ from ._registry import get_operation, get_operation_signature
 from ._result import ToolResult
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 
 class Session:
@@ -43,6 +46,8 @@ class Session:
         self,
         session_id: str | None = None,
         allowed_ops: set[str] | None = None,
+        operations: dict[str, Callable[..., Any]] | None = None,
+        strict_hooks: bool = False,
     ):
         """
         Create a new isolated session.
@@ -51,17 +56,33 @@ class Session:
             session_id: Optional custom ID. Auto-generated if not provided.
             allowed_ops: If provided, only these operations can be used.
                         None means all operations are allowed.
+            operations: Optional custom operations dict. If provided, only these
+                       operations are available (ignores global registry).
+                       None means use the global registry.
+            strict_hooks: If True, hook errors are re-raised instead of logged.
         """
         self.id = session_id or f"session_{uuid.uuid4().hex[:8]}"
         self._refs: dict[str, Ref[Any]] = {}
         self._value_cache: dict[str, Any] = {}
         self._allowed_ops = allowed_ops
+        self._operations = operations
+        self._strict_hooks = strict_hooks
+        self._reverse_deps: dict[str, set[str]] = {}
 
         self._hooks: dict[str, list[Callable[..., None]]] = {
             "before_resolve": [],
             "after_resolve": [],
             "on_error": [],
+            "on_progress": [],
         }
+
+    def _get_operation(self, name: str) -> Callable[..., Any]:
+        """Get operation from session-local or global registry."""
+        if self._operations is not None:
+            if name not in self._operations:
+                raise KeyError(f"Unknown operation in session: {name}")
+            return self._operations[name]
+        return get_operation(name)
 
     def ref(self, op_name: str, **kwargs: Any) -> Ref[Any]:
         """
@@ -83,7 +104,7 @@ class Session:
                 f"Allowed operations: {sorted(self._allowed_ops)}"
             )
 
-        get_operation(op_name)
+        self._get_operation(op_name)
 
         new_ref: Ref[Any] = Ref(op=op_name, args=kwargs)
         self._refs[new_ref.id] = new_ref
@@ -133,10 +154,16 @@ class Session:
     def _resolve_with_cache(self, ref: Ref[Any]) -> Any:
         """Resolve using session's persistent cache."""
         order = topological_order(ref)
+        self._build_reverse_deps(order)
+        total = len(order)
+        completed = 0
 
         for node in order:
             if node.id in self._value_cache:
+                completed += 1
                 continue
+
+            self._emit("on_progress", completed=completed, total=total, current=node)
 
             resolved_args: dict[str, Any] = {}
             for key, value in node.args.items():
@@ -146,7 +173,7 @@ class Session:
                     resolved_args[key] = value
 
             try:
-                op_func = get_operation(node.op)
+                op_func = self._get_operation(node.op)
             except KeyError as e:
                 chain = [r.id for r in order[: order.index(node) + 1]]
                 raise ResolutionError(
@@ -172,8 +199,16 @@ class Session:
 
             self._emit("after_resolve", ref=node, result=result)
             self._value_cache[node.id] = result
+            completed += 1
 
+        self._emit("on_progress", completed=total, total=total, current=None)
         return self._value_cache[ref.id]
+
+    def _build_reverse_deps(self, order: list[Ref[Any]]) -> None:
+        """Build reverse dependency map for cache invalidation."""
+        for node in order:
+            for parent in node.parents:
+                self._reverse_deps.setdefault(parent.id, set()).add(node.id)
 
     async def aresolve(
         self,
@@ -181,6 +216,7 @@ class Session:
         *,
         parallel: bool = True,
         timeout: float | None = None,
+        executor: Executor | None = None,
     ) -> Any:
         """
         Resolve a ref asynchronously with optional parallel execution.
@@ -192,6 +228,9 @@ class Session:
             ref: The ref to resolve (or ref ID string)
             parallel: If True, execute independent branches concurrently
             timeout: Optional timeout in seconds. Raises TimeoutError if exceeded.
+            executor: Optional executor for sync operations. Use ProcessPoolExecutor
+                     for true parallelism of CPU-bound operations. Default uses
+                     ThreadPoolExecutor which only parallelizes I/O-bound work.
 
         Returns:
             The concrete value produced by the operation
@@ -201,39 +240,71 @@ class Session:
 
         if timeout is not None:
             return await asyncio.wait_for(
-                self._aresolve_with_cache(ref, parallel=parallel),
+                self._aresolve_with_cache(
+                    ref, parallel=parallel, executor=executor
+                ),
                 timeout=timeout,
             )
-        return await self._aresolve_with_cache(ref, parallel=parallel)
+        return await self._aresolve_with_cache(
+            ref, parallel=parallel, executor=executor
+        )
 
     async def _aresolve_with_cache(
-        self, ref: Ref[Any], *, parallel: bool = True
+        self,
+        ref: Ref[Any],
+        *,
+        parallel: bool = True,
+        executor: Executor | None = None,
     ) -> Any:
         """Async resolve using session's persistent cache."""
         order = topological_order(ref)
+        self._build_reverse_deps(order)
+        total = len(order)
 
         if parallel:
             levels = group_by_level(order)
+            completed = 0
             for level in levels:
-                # Filter out already-cached nodes
                 to_execute = [n for n in level if n.id not in self._value_cache]
+                cached_count = len(level) - len(to_execute)
+                completed += cached_count
+
                 if not to_execute:
                     continue
 
+                self._emit(
+                    "on_progress", completed=completed, total=total, current=None
+                )
+
                 if len(to_execute) == 1:
-                    await self._execute_one_async(to_execute[0], order)
+                    await self._execute_one_async(to_execute[0], order, executor)
                 else:
                     await asyncio.gather(*[
-                        self._execute_one_async(node, order) for node in to_execute
+                        self._execute_one_async(node, order, executor)
+                        for node in to_execute
                     ])
+                completed += len(to_execute)
+
+            self._emit("on_progress", completed=total, total=total, current=None)
         else:
+            completed = 0
             for node in order:
                 if node.id not in self._value_cache:
-                    await self._execute_one_async(node, order)
+                    self._emit(
+                        "on_progress", completed=completed, total=total, current=node
+                    )
+                    await self._execute_one_async(node, order, executor)
+                completed += 1
+            self._emit("on_progress", completed=total, total=total, current=None)
 
         return self._value_cache[ref.id]
 
-    async def _execute_one_async(self, node: Ref[Any], order: list[Ref[Any]]) -> None:
+    async def _execute_one_async(
+        self,
+        node: Ref[Any],
+        order: list[Ref[Any]],
+        executor: Executor | None = None,
+    ) -> None:
         """Execute a single operation asynchronously."""
         resolved_args: dict[str, Any] = {}
         for key, value in node.args.items():
@@ -243,7 +314,7 @@ class Session:
                 resolved_args[key] = value
 
         try:
-            op_func = get_operation(node.op)
+            op_func = self._get_operation(node.op)
         except KeyError as e:
             chain = [r.id for r in order[: order.index(node) + 1]]
             raise ResolutionError(
@@ -261,7 +332,7 @@ class Session:
             else:
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(
-                    None, lambda: op_func(**resolved_args)
+                    executor, lambda: op_func(**resolved_args)
                 )
         except ResolutionError:
             raise
@@ -323,6 +394,7 @@ class Session:
         """Clear all refs and cached values from this session."""
         self._refs.clear()
         self._value_cache.clear()
+        self._reverse_deps.clear()
 
     def on(self, event: str) -> Callable[[Callable[..., None]], Callable[..., None]]:
         """
@@ -338,6 +410,9 @@ class Session:
             - "on_error": Called when an operation fails
               Signature: (ref: Ref, error: Exception) -> None
 
+            - "on_progress": Called during resolution to report progress
+              Signature: (completed: int, total: int, current: Ref | None) -> None
+
         Example:
             session = phantom.Session()
 
@@ -348,6 +423,10 @@ class Session:
             @session.on("after_resolve")
             def log_done(ref, result):
                 print(f"Finished {ref.op}")
+
+            @session.on("on_progress")
+            def show_progress(completed, total, current):
+                print(f"Progress: {completed}/{total}")
         """
         if event not in self._hooks:
             raise ValueError(
@@ -365,8 +444,10 @@ class Session:
         for hook in self._hooks.get(event, []):
             try:
                 hook(**kwargs)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Hook error in '{event}': {e}")
+                if self._strict_hooks:
+                    raise
 
     def clear_hooks(self, event: str | None = None) -> None:
         """
@@ -392,23 +473,40 @@ class Session:
         """
         return {event: len(handlers) for event, handlers in self._hooks.items()}
 
-    def invalidate(self, ref_id: str | None = None) -> None:
+    def invalidate(self, ref_id: str | None = None, *, cascade: bool = True) -> int:
         """
         Invalidate cached values.
 
         Args:
             ref_id: If provided, only invalidate this ref's cached value.
                    If None, clear all cached values.
+            cascade: If True (default), also invalidate all refs that depend
+                    on this ref. Only applies when ref_id is provided.
 
-        Note:
-            This does not invalidate dependent refs. If you invalidate a ref
-            that other refs depend on, you should invalidate those too or
-            call invalidate() with no arguments to clear everything.
+        Returns:
+            Number of refs invalidated.
         """
-        if ref_id is not None:
-            self._value_cache.pop(ref_id, None)
-        else:
+        if ref_id is None:
+            count = len(self._value_cache)
             self._value_cache.clear()
+            return count
+
+        invalidated: set[str] = set()
+        self._cascade_invalidate(ref_id, invalidated, cascade)
+        return len(invalidated)
+
+    def _cascade_invalidate(
+        self, ref_id: str, invalidated: set[str], cascade: bool
+    ) -> None:
+        """Recursively invalidate a ref and optionally its dependents."""
+        if ref_id in invalidated:
+            return
+        if ref_id in self._value_cache:
+            del self._value_cache[ref_id]
+            invalidated.add(ref_id)
+        if cascade:
+            for dep_id in self._reverse_deps.get(ref_id, []):
+                self._cascade_invalidate(dep_id, invalidated, cascade)
 
     def peek(self, ref: Ref[Any] | str) -> dict[str, Any]:
         """
