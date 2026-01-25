@@ -66,20 +66,3 @@ def _inspect_dict(data: dict[str, Any]) -> dict[str, Any]:
 
 _default_inspectors[list] = _inspect_list
 _default_inspectors[dict] = _inspect_dict
-
-
-try:
-    import pandas as pd
-
-    def _inspect_dataframe(df: pd.DataFrame) -> dict[str, Any]:
-        """Default inspector for pandas DataFrames."""
-        return {
-            "type": "dataframe",
-            "shape": list(df.shape),
-            "columns": {col: str(dtype) for col, dtype in df.dtypes.items()},
-            "sample": df.head(5).to_dict("records"),
-        }
-
-    _default_inspectors[pd.DataFrame] = _inspect_dataframe
-except ImportError:
-    pass

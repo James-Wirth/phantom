@@ -25,9 +25,14 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+pandas = ["pandas>=2.0"]
+polars = ["polars>=0.20"]
+duckdb = ["duckdb>=0.9"]
+all = ["pandas>=2.0", "polars>=0.20", "duckdb>=0.9"]
 dev = [
     "pytest>=8.0",
     "mypy>=1.8",
+    "pandas>=2.0",
 ]
 
 [tool.hatch.build.targets.wheel]
