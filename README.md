@@ -76,12 +76,11 @@ Phantom auto-generates tool definitions from your operations and handles tool ca
 ```python
 import json
 import openai
-import phantom
 
 client = openai.OpenAI()
 
-session = phantom.Session()
-tools = session.get_tools()  # or format="anthropic" for Claude
+# using the Session instance defined above...
+tools = session.get_tools()  
 
 messages = [{"role": "user", "content": "What's our most profitable segment by region?"}]
 
