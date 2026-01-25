@@ -49,6 +49,7 @@ class OperationSet:
     def __init__(self) -> None:
         """Create a new empty operation set."""
         self._operations: dict[str, Callable[..., Any]] = {}
+        self._inspectors: dict[type, Callable[[Any], dict[str, Any]]] = {}
 
     def op(self, func: Callable[..., T]) -> Callable[..., T]:
         """
@@ -72,6 +73,41 @@ class OperationSet:
         """
         self._operations[func.__name__] = func
         return func
+
+    def inspector(
+        self, data_type: type
+    ) -> Callable[[Callable[[Any], dict[str, Any]]], Callable[[Any], dict[str, Any]]]:
+        """
+        Register an inspector for a data type in this operation set.
+
+        Inspectors define how data is summarized for LLM context via peek().
+        When this OperationSet is registered with a session, inspectors are
+        also registered automatically.
+
+        Example:
+            ops = OperationSet()
+
+            @ops.inspector(pd.DataFrame)
+            def inspect_df(df: pd.DataFrame) -> dict[str, Any]:
+                return {
+                    "type": "dataframe",
+                    "shape": list(df.shape),
+                    "columns": list(df.columns),
+                }
+
+            # When registered, inspector is included
+            session.register(ops)
+        """
+        def decorator(
+            fn: Callable[[Any], dict[str, Any]]
+        ) -> Callable[[Any], dict[str, Any]]:
+            self._inspectors[data_type] = fn
+            return fn
+        return decorator
+
+    def iter_inspectors(self) -> Iterator[tuple[type, Callable[[Any], dict[str, Any]]]]:
+        """Iterate over (type, inspector_func) pairs."""
+        return iter(self._inspectors.items())
 
     def list_operations(self) -> list[str]:
         """List all operation names in this set."""

@@ -146,6 +146,8 @@ class Session:
             if isinstance(item, OperationSet):
                 for op_name, func in item:
                     self._operations[op_name] = func
+                for dtype, inspector_fn in item.iter_inspectors():
+                    self._inspectors[dtype] = inspector_fn
             elif callable(item):
                 op_name = name if name is not None else item.__name__
                 self._operations[op_name] = item
