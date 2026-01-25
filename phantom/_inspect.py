@@ -5,48 +5,40 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-_inspectors: dict[type, Callable[[Any], dict[str, Any]]] = {}
-
-
 InspectorFunc = Callable[[Any], dict[str, Any]]
 
+_default_inspectors: dict[type, InspectorFunc] = {}
 
-def inspector(data_type: type) -> Callable[[InspectorFunc], InspectorFunc]:
+
+def _inspect_value(
+    value: Any,
+    session_inspectors: dict[type, InspectorFunc] | None = None,
+) -> dict[str, Any]:
     """
-    Decorator to register an inspector for a data type.
-
-    Inspectors are functions that take a value and return a dict
-    describing it. The dict format is entirely up to the inspector -
-    different data types need different representations.
+    Run the appropriate inspector for a value.
 
     Args:
-        data_type: The type this inspector handles
+        value: The value to inspect
+        session_inspectors: Optional session-specific inspectors (checked first)
 
-    Example:
-        @inspector(pd.DataFrame)
-        def inspect_dataframe(df: pd.DataFrame) -> dict[str, Any]:
-            return {
-                "type": "dataframe",
-                "shape": list(df.shape),
-                "columns": list(df.columns),
-            }
+    Returns:
+        Dict describing the value
     """
-    def decorator(fn: InspectorFunc) -> InspectorFunc:
-        _inspectors[data_type] = fn
-        return fn
-    return decorator
 
+    if session_inspectors:
+        for dtype, inspector_fn in session_inspectors.items():
+            if isinstance(value, dtype):
+                return inspector_fn(value)
 
-def _inspect_value(value: Any) -> dict[str, Any]:
-    """Run the appropriate inspector for a value."""
-    for dtype, inspector_fn in _inspectors.items():
+    for dtype, inspector_fn in _default_inspectors.items():
         if isinstance(value, dtype):
             return inspector_fn(value)
+
     return {"type": type(value).__name__, "value": repr(value)[:200]}
 
 
-@inspector(list)
 def _inspect_list(data: list[Any]) -> dict[str, Any]:
+    """Default inspector for lists."""
     if not data:
         return {"type": "list", "length": 0}
 
@@ -63,8 +55,8 @@ def _inspect_list(data: list[Any]) -> dict[str, Any]:
     return result
 
 
-@inspector(dict)
 def _inspect_dict(data: dict[str, Any]) -> dict[str, Any]:
+    """Default inspector for dicts."""
     return {
         "type": "dict",
         "keys": list(data.keys()),
@@ -72,16 +64,22 @@ def _inspect_dict(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_default_inspectors[list] = _inspect_list
+_default_inspectors[dict] = _inspect_dict
+
+
 try:
     import pandas as pd
 
-    @inspector(pd.DataFrame)
     def _inspect_dataframe(df: pd.DataFrame) -> dict[str, Any]:
+        """Default inspector for pandas DataFrames."""
         return {
             "type": "dataframe",
             "shape": list(df.shape),
             "columns": {col: str(dtype) for col, dtype in df.dtypes.items()},
             "sample": df.head(5).to_dict("records"),
         }
+
+    _default_inspectors[pd.DataFrame] = _inspect_dataframe
 except ImportError:
     pass

@@ -58,7 +58,7 @@ class Ref(Generic[T]):
             A multi-line string showing the computation tree
 
         Example:
-            >>> ref = phantom.ref("summarize", data=filtered_data)
+            >>> ref = session.ref("summarize", data=filtered_data)
             >>> print(ref.explain())
             @a3f2: summarize(data=@b1c4)
               @b1c4: filter(data=@c5d6, condition='amount > 100')

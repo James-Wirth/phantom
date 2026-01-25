@@ -38,28 +38,30 @@ pip install -e .
 
 ## Defining Operations
 
-Operations are regular Python functions decorated with `@phantom.op`. Your function's docstring becomes the tool description for the LLM.
+Operations are regular Python functions registered with `@session.op`. Your function's docstring becomes the tool description for the LLM.
 
 ```python
 import pandas as pd
 import phantom
 
-@phantom.op
+session = phantom.Session()
+
+@session.op
 def load_csv(path: str) -> pd.DataFrame:
     """Load a CSV file as a DataFrame."""
     return pd.read_csv(path)
 
-@phantom.op
+@session.op
 def merge(left: phantom.Ref[pd.DataFrame], right: phantom.Ref[pd.DataFrame], on: str) -> pd.DataFrame:
     """Merge two DataFrames on a key column."""
     return left.merge(right, on=on)
 
-@phantom.op
+@session.op
 def groupby_agg(df: phantom.Ref[pd.DataFrame], by: list[str], agg: dict) -> pd.DataFrame:
     """Group by columns and aggregate. Example: agg={"profit": "sum"}"""
     return df.groupby(by, as_index=False).agg(agg)
 
-@phantom.op
+@session.op
 def sort_values(df: phantom.Ref[pd.DataFrame], by: str, ascending: bool = True) -> pd.DataFrame:
     """Sort DataFrame by column."""
     return df.sort_values(by, ascending=ascending)
@@ -145,7 +147,7 @@ Nothing executes until you call `resolve()`. The LLM builds a DAG of operations 
 ### Data Inspection with `peek`
 Let the LLM see schema, shape, and sample rows—not the full dataset. Register custom inspectors for your data types:
 ```python
-@phantom.inspector(pd.DataFrame)
+@session.inspector(pd.DataFrame)
 def inspect_df(df: pd.DataFrame) -> dict:
     return {
         "shape": list(df.shape),
@@ -166,8 +168,8 @@ result = session.resolve(ref)
 ### Graph Serialization
 Save and replay pipelines:
 ```python
-phantom.save_graph(ref, "analysis.json")
-loaded = phantom.load_graph("analysis.json")
+session.save_graph(ref, "analysis.json")
+loaded = session.load_graph("analysis.json")
 ```
 
 ### Rich Error Context

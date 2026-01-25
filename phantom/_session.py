@@ -12,7 +12,6 @@ from typing import Any, TypeVar
 from ._errors import ResolutionError
 from ._graph import group_by_level, topological_order
 from ._ref import Ref
-from ._registry import get_operation, get_operation_signature
 from ._result import ToolResult
 
 T = TypeVar("T")
@@ -21,32 +20,34 @@ logger = logging.getLogger(__name__)
 
 class Session:
     """
-    Isolated context for a single LLM conversation.
+    Isolated context for LLM conversations with session-scoped operations.
 
-    Each session maintains its own ref registry, preventing conflicts
-    between concurrent LLM sessions. Operations remain global (they are
-    stateless and registered at import time).
+    Each session maintains its own operation registry and ref storage,
+    providing complete isolation between concurrent LLM sessions.
+    Operations are registered using the @session.op decorator.
 
     Example:
         session = phantom.Session()
 
-        # Create refs in this session
+        @session.op
+        def load(source: str) -> pd.DataFrame:
+            return pd.read_parquet(source)
+
+        @session.op
+        def filter(data: pd.DataFrame, condition: str) -> pd.DataFrame:
+            return data.query(condition)
+
+        # Create refs (lazy - nothing executes yet)
         data = session.ref("load", source="data.csv")
         filtered = session.ref("filter", data=data, condition="x > 0")
 
-        # Resolve within this session
+        # Resolve when needed
         result = session.resolve(filtered)
-
-        # Sessions are isolated
-        other_session = phantom.Session()
-        # other_session.get(data.id) would raise KeyError
     """
 
     def __init__(
         self,
         session_id: str | None = None,
-        allowed_ops: set[str] | None = None,
-        operations: dict[str, Callable[..., Any]] | None = None,
         strict_hooks: bool = False,
     ):
         """
@@ -54,18 +55,13 @@ class Session:
 
         Args:
             session_id: Optional custom ID. Auto-generated if not provided.
-            allowed_ops: If provided, only these operations can be used.
-                        None means all operations are allowed.
-            operations: Optional custom operations dict. If provided, only these
-                       operations are available (ignores global registry).
-                       None means use the global registry.
             strict_hooks: If True, hook errors are re-raised instead of logged.
         """
         self.id = session_id or f"session_{uuid.uuid4().hex[:8]}"
         self._refs: dict[str, Ref[Any]] = {}
         self._value_cache: dict[str, Any] = {}
-        self._allowed_ops = allowed_ops
-        self._operations = operations
+        self._operations: dict[str, Callable[..., Any]] = {}
+        self._inspectors: dict[type, Callable[[Any], dict[str, Any]]] = {}
         self._strict_hooks = strict_hooks
         self._reverse_deps: dict[str, set[str]] = {}
 
@@ -76,13 +72,76 @@ class Session:
             "on_progress": [],
         }
 
+    def op(self, func: Callable[..., T]) -> Callable[..., T]:
+        """
+        Register a function as an operation in this session.
+
+        The decorated function can be called directly or used to create refs.
+        The function name becomes the operation name.
+
+        Example:
+            session = phantom.Session()
+
+            @session.op
+            def add(x: int, y: int) -> int:
+                return x + y
+
+            # Create a ref (lazy)
+            ref = session.ref("add", x=1, y=2)
+
+            # Or call directly
+            result = add(1, 2)
+        """
+        name = func.__name__
+        self._operations[name] = func
+        return func
+
+    def list_operations(self) -> list[str]:
+        """List all operations registered in this session."""
+        return list(self._operations.keys())
+
+    def inspector(
+        self, data_type: type
+    ) -> Callable[[Callable[[Any], dict[str, Any]]], Callable[[Any], dict[str, Any]]]:
+        """
+        Register a custom inspector for a data type in this session.
+
+        Inspectors define how `peek` summarizes data for the LLM.
+        Session inspectors take precedence over default inspectors.
+
+        Example:
+            session = phantom.Session()
+
+            @session.inspector(pd.DataFrame)
+            def inspect_df(df: pd.DataFrame) -> dict[str, Any]:
+                return {
+                    "type": "dataframe",
+                    "shape": list(df.shape),
+                    "columns": list(df.columns),
+                }
+        """
+        def decorator(
+            fn: Callable[[Any], dict[str, Any]]
+        ) -> Callable[[Any], dict[str, Any]]:
+            self._inspectors[data_type] = fn
+            return fn
+        return decorator
+
     def _get_operation(self, name: str) -> Callable[..., Any]:
-        """Get operation from session-local or global registry."""
-        if self._operations is not None:
-            if name not in self._operations:
-                raise KeyError(f"Unknown operation in session: {name}")
-            return self._operations[name]
-        return get_operation(name)
+        """Get operation from this session's registry."""
+        if name not in self._operations:
+            raise KeyError(
+                f"Unknown operation: '{name}'. "
+                f"Register it with @session.op first."
+            )
+        return self._operations[name]
+
+    def _get_operation_signature(self, name: str) -> dict[str, Any]:
+        """Get operation signature for tool generation and type coercion."""
+        from ._registry import get_operation_signature_from_func
+
+        func = self._get_operation(name)
+        return get_operation_signature_from_func(name, func)
 
     def ref(self, op_name: str, **kwargs: Any) -> Ref[Any]:
         """
@@ -96,13 +155,8 @@ class Session:
             A Ref registered in this session
 
         Raises:
-            PermissionError: If op_name is not in allowed_ops (when set)
+            KeyError: If op_name is not registered in this session
         """
-        if self._allowed_ops is not None and op_name not in self._allowed_ops:
-            raise PermissionError(
-                f"Operation '{op_name}' is not allowed in this session. "
-                f"Allowed operations: {sorted(self._allowed_ops)}"
-            )
 
         self._get_operation(op_name)
 
@@ -357,10 +411,9 @@ class Session:
         self, format: str = "openai", include_peek: bool = True
     ) -> list[dict[str, Any]]:
         """
-        Get tool definitions, filtered to allowed operations.
+        Get tool definitions for this session's operations.
 
-        If allowed_ops was set at session creation, only those operations
-        are included. Otherwise, all registered operations are included.
+        Generates tool schemas from all operations registered with @session.op.
 
         Args:
             format: The schema format to use. Options: "openai", "anthropic"
@@ -371,24 +424,11 @@ class Session:
         """
         from ._registry import get_tools as _get_tools
 
-        all_tools = _get_tools(format=format, include_peek=include_peek)
-
-        if self._allowed_ops is None:
-            return all_tools
-
-        filtered = []
-        for tool in all_tools:
-            if format == "openai":
-                name = tool.get("function", {}).get("name", "")
-            else:
-                name = tool.get("name", "")
-
-            if name == "peek" and include_peek:
-                filtered.append(tool)
-            elif name in self._allowed_ops:
-                filtered.append(tool)
-
-        return filtered
+        return _get_tools(
+            self._operations,
+            format=format,
+            include_peek=include_peek,
+        )
 
     def clear(self) -> None:
         """Clear all refs and cached values from this session."""
@@ -513,7 +553,7 @@ class Session:
         Peek at a ref's resolved value and return info about it.
 
         Uses the session's cache, so repeated peeks are instant.
-        This is the recommended way to inspect refs in a session.
+        Uses session-scoped inspectors if registered, otherwise defaults.
 
         Args:
             ref: The ref to peek at (or ref ID string)
@@ -527,7 +567,7 @@ class Session:
             ref = self.get(ref)
 
         value = self.resolve(ref)
-        info = _inspect_value(value)
+        info = _inspect_value(value, self._inspectors)
 
         return {
             "ref": ref.id,
@@ -541,6 +581,7 @@ class Session:
         Async version of peek.
 
         Uses the session's cache, so repeated peeks are instant.
+        Uses session-scoped inspectors if registered, otherwise defaults.
 
         Args:
             ref: The ref to peek at (or ref ID string)
@@ -554,7 +595,7 @@ class Session:
             ref = self.get(ref)
 
         value = await self.aresolve(ref)
-        info = _inspect_value(value)
+        info = _inspect_value(value, self._inspectors)
 
         return {
             "ref": ref.id,
@@ -579,7 +620,7 @@ class Session:
         """
         resolved_args: dict[str, Any] = {}
 
-        sig = get_operation_signature(op_name) if coerce_types else None
+        sig = self._get_operation_signature(op_name) if coerce_types else None
         params = sig["params"] if sig else {}
 
         for key, value in arguments.items():
@@ -661,6 +702,62 @@ class Session:
             if catch_errors:
                 return ToolResult.from_error(e)
             raise
+
+    def save_graph(self, ref: Ref[Any] | str, path: str) -> None:
+        """
+        Save a computation graph from this session to a JSON file.
+
+        Args:
+            ref: The root ref of the graph to save (or ref ID string)
+            path: File path to write to
+
+        Example:
+            session.save_graph(result_ref, "analysis.json")
+        """
+        import json
+        from pathlib import Path
+
+        from ._serialize import serialize_graph
+
+        if isinstance(ref, str):
+            ref = self.get(ref)
+
+        data = serialize_graph(ref)
+        Path(path).write_text(json.dumps(data, indent=2))
+
+    def load_graph(self, path: str) -> Ref[Any]:
+        """
+        Load a computation graph from a JSON file into this session.
+
+        The loaded refs are automatically registered in this session.
+
+        Args:
+            path: File path to read from
+
+        Returns:
+            The root Ref with all dependencies registered in this session
+
+        Example:
+            ref = session.load_graph("analysis.json")
+            result = session.resolve(ref)
+        """
+        import json
+        from pathlib import Path
+
+        from ._serialize import deserialize_graph
+
+        data = json.loads(Path(path).read_text())
+        root = deserialize_graph(data)
+
+        def register_refs(r: Ref[Any]) -> None:
+            if r.id in self._refs:
+                return
+            for parent in r.parents:
+                register_refs(parent)
+            self._refs[r.id] = r
+
+        register_refs(root)
+        return root
 
     def __repr__(self) -> str:
         return f"Session({self.id!r}, refs={len(self._refs)})"

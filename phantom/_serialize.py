@@ -1,9 +1,7 @@
-"""Serialize - Graph persistence and replay."""
+"""Serialize - Internal utilities for graph serialization."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 from ._ref import Ref
@@ -13,21 +11,13 @@ def serialize_graph(root: Ref[Any]) -> dict[str, Any]:
     """
     Serialize a ref and all its dependencies to a JSON-compatible dict.
 
-    The serialized form captures the entire computation graph, allowing
-    it to be saved and later reconstructed for replay or analysis.
+    This is an internal utility used by Session.save_graph().
 
     Args:
         root: The root ref of the graph to serialize
 
     Returns:
         A dict with 'root', 'refs', and 'version' keys
-
-    Example:
-        data = phantom.ref("load", source="data.csv")
-        filtered = phantom.ref("filter", data=data, condition="x > 0")
-
-        graph = phantom.serialize_graph(filtered)
-        # graph can be saved to JSON and later deserialized
     """
     refs: dict[str, dict[str, Any]] = {}
 
@@ -63,6 +53,8 @@ def deserialize_graph(data: dict[str, Any]) -> Ref[Any]:
     """
     Reconstruct a ref graph from serialized form.
 
+    This is an internal utility used by Session.load_graph().
+
     Args:
         data: The serialized graph dict (from serialize_graph)
 
@@ -71,12 +63,6 @@ def deserialize_graph(data: dict[str, Any]) -> Ref[Any]:
 
     Raises:
         ValueError: If the data format is invalid
-
-    Example:
-        graph = phantom.serialize_graph(some_ref)
-        # ... save to file, send over network, etc.
-        restored_ref = phantom.deserialize_graph(graph)
-        result = phantom.resolve(restored_ref)
     """
     if "version" not in data or "root" not in data or "refs" not in data:
         raise ValueError("Invalid serialized graph: missing required keys")
@@ -112,36 +98,3 @@ def deserialize_graph(data: dict[str, Any]) -> Ref[Any]:
         return ref
 
     return build(root_id)
-
-
-def save_graph(ref: Ref[Any], path: str | Path) -> None:
-    """
-    Save a computation graph to a JSON file.
-
-    Args:
-        ref: The root ref of the graph to save
-        path: File path to write to
-
-    Example:
-        phantom.save_graph(my_ref, "analysis.json")
-    """
-    data = serialize_graph(ref)
-    Path(path).write_text(json.dumps(data, indent=2))
-
-
-def load_graph(path: str | Path) -> Ref[Any]:
-    """
-    Load a computation graph from a JSON file.
-
-    Args:
-        path: File path to read from
-
-    Returns:
-        The root Ref with all dependencies reconstructed
-
-    Example:
-        ref = phantom.load_graph("analysis.json")
-        result = phantom.resolve(ref)
-    """
-    data = json.loads(Path(path).read_text())
-    return deserialize_graph(data)

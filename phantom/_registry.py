@@ -1,15 +1,12 @@
-"""Registry - Operation registration and ref storage."""
+"""Registry utilities for operation introspection and tool generation."""
 
 from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from functools import wraps
-from typing import Any, TypeVar, get_origin, get_type_hints
+from typing import Any, get_origin, get_type_hints
 
 from ._ref import Ref
-
-T = TypeVar("T")
 
 
 def _is_ref_type(type_hint: Any) -> bool:
@@ -19,52 +16,35 @@ def _is_ref_type(type_hint: Any) -> bool:
     origin = get_origin(type_hint)
     return origin is Ref
 
-_operations: dict[str, Callable[..., Any]] = {}
+
+def _python_type_to_json_schema(type_name: str) -> str:
+    """Map Python type names to JSON Schema types."""
+    mapping = {
+        "str": "string",
+        "int": "integer",
+        "float": "number",
+        "bool": "boolean",
+        "list": "array",
+        "dict": "object",
+        "None": "null",
+        "NoneType": "null",
+    }
+    return mapping.get(type_name, "string")
 
 
-def op(func: Callable[..., T]) -> Callable[..., T]:
+def get_operation_signature_from_func(
+    name: str, func: Callable[..., Any]
+) -> dict[str, Any]:
     """
-    Register a function as a Phantom operation.
+    Extract signature info from a function for tool generation.
 
-    The decorated function defines concrete behavior that executes
-    when a ref is resolved. The function name becomes the operation name.
+    Args:
+        name: The operation name to use in the signature
+        func: The callable to introspect
 
-    Example:
-        @phantom.op
-        def load(source: str) -> pd.DataFrame:
-            return pd.read_parquet(source)
-
-        # Creates a ref, doesn't execute yet
-        data = phantom.ref("load", source="data.parquet")
-
-        # Now executes
-        df = phantom.resolve(data)
+    Returns:
+        Dict with name, doc, params, and return_type
     """
-    name = func.__name__
-    _operations[name] = func
-
-    @wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> T:
-        return func(*args, **kwargs)
-
-    return wrapper
-
-
-def get_operation(name: str) -> Callable[..., Any]:
-    """Get a registered operation by name."""
-    if name not in _operations:
-        raise KeyError(f"Unknown operation: {name}")
-    return _operations[name]
-
-
-def list_operations() -> list[str]:
-    """List all registered operation names."""
-    return list(_operations.keys())
-
-
-def get_operation_signature(name: str) -> dict[str, Any]:
-    """Get operation signature info (for tool generation)."""
-    func = get_operation(name)
     sig = inspect.signature(func)
     hints = get_type_hints(func) if hasattr(func, "__annotations__") else {}
 
@@ -97,82 +77,16 @@ def get_operation_signature(name: str) -> dict[str, Any]:
     }
 
 
-def validate_args(op_name: str, args: dict[str, Any]) -> list[str]:
-    """
-    Validate arguments against an operation's signature.
-
-    Returns a list of warnings (not errors) for issues like:
-    - Missing required parameters
-    - Unknown parameters
-    - Basic type mismatches
-
-    This is advisory - it doesn't block ref creation, just warns.
-
-    Args:
-        op_name: Name of the registered operation
-        args: Arguments dict to validate
-
-    Returns:
-        List of warning messages (empty if all OK)
-    """
-    warnings = []
-    sig = get_operation_signature(op_name)
-    params = sig["params"]
-
-    for param_name, param_info in params.items():
-        if "default" not in param_info and param_name not in args:
-            warnings.append(f"Missing required parameter: '{param_name}'")
-
-    for arg_name in args:
-        if arg_name not in params:
-            warnings.append(f"Unknown parameter: '{arg_name}'")
-
-    for arg_name, arg_value in args.items():
-        if arg_name not in params:
-            continue
-        param_info = params[arg_name]
-        if param_info.get("is_ref"):
-            if not isinstance(arg_value, Ref):
-                actual = type(arg_value).__name__
-                warnings.append(
-                    f"Parameter '{arg_name}' expects a Ref, got {actual}"
-                )
-        else:
-            expected_type = param_info.get("type", "")
-            actual_type = type(arg_value).__name__
-            primitive_types = ("str", "int", "float", "bool")
-            if expected_type in primitive_types and actual_type != expected_type:
-                if actual_type != "str":
-                    warnings.append(
-                        f"Parameter '{arg_name}' expects {expected_type}, "
-                        f"got {actual_type}"
-                    )
-
-    return warnings
-
-
-def _python_type_to_json_schema(type_name: str) -> str:
-    """Map Python type names to JSON Schema types."""
-    mapping = {
-        "str": "string",
-        "int": "integer",
-        "float": "number",
-        "bool": "boolean",
-        "list": "array",
-        "dict": "object",
-        "None": "null",
-        "NoneType": "null",
-    }
-    return mapping.get(type_name, "string")
-
-
 def get_tools(
-    format: str = "openai", include_peek: bool = True
+    operations: dict[str, Callable[..., Any]],
+    format: str = "openai",
+    include_peek: bool = True,
 ) -> list[dict[str, Any]]:
     """
-    Generate tool definitions for all registered operations.
+    Generate tool definitions for operations.
 
     Args:
+        operations: Operations dict to generate tools from.
         format: The schema format to use. Options: "openai", "anthropic"
         include_peek: Whether to include the peek tool (default True)
 
@@ -180,13 +94,15 @@ def get_tools(
         A list of tool definitions in the specified format.
 
     Example:
-        @phantom.op
+        session = phantom.Session()
+
+        @session.op
         def search(query: str, limit: int = 10) -> list[dict]:
             '''Search for items matching query.'''
             ...
 
         # OpenAI format (default)
-        tools = phantom.get_tools()
+        tools = session.get_tools()
         response = openai.chat.completions.create(
             model="gpt-4",
             messages=messages,
@@ -194,7 +110,7 @@ def get_tools(
         )
 
         # Anthropic format
-        tools = phantom.get_tools(format="anthropic")
+        tools = session.get_tools(format="anthropic")
         response = anthropic.messages.create(
             model="claude-sonnet-4-20250514",
             messages=messages,
@@ -205,8 +121,9 @@ def get_tools(
         raise ValueError(f"Unknown format: {format}. Use 'openai' or 'anthropic'.")
 
     tools = []
-    for op_name in list_operations():
-        sig = get_operation_signature(op_name)
+
+    for op_name, op_func in operations.items():
+        sig = get_operation_signature_from_func(op_name, op_func)
 
         properties = {}
         required = []
