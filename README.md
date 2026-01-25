@@ -74,13 +74,12 @@ The key insight: **parameters typed as `Ref[T]` are automatically resolved** bef
 Phantom auto-generates tool definitions from your operations and handles tool calls uniformly:
 
 ```python
-import json
 import openai
 
 client = openai.OpenAI()
 
 # using the Session instance defined above...
-tools = session.get_tools()  
+tools = session.get_tools()
 
 messages = [{"role": "user", "content": "What's our most profitable segment by region?"}]
 
@@ -97,12 +96,12 @@ while True:
         for tool_call in message.tool_calls:
             result = session.handle_tool_call(
                 tool_call.function.name,
-                json.loads(tool_call.function.arguments)
+                tool_call.function.arguments,  
             )
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
-                "content": json.dumps(result.to_dict()),
+                "content": result.to_json(),
             })
     else:
         break
@@ -111,7 +110,7 @@ while True:
 final_data = session.resolve(result.ref)
 ```
 
-`handle_tool_call` returns refs for lazy operations and immediate results for `peek`. The LLM sees just enough to make decisions.
+`handle_tool_call` accepts JSON strings or dicts and returns refs for lazy operations, immediate results for `peek`. The LLM sees just enough to make decisions.
 
 ## Example: AI Data Analyst
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -29,9 +30,18 @@ class ToolResult:
     data: dict[str, Any]
     ref: Ref[Any] | None = None
 
+    @property
+    def is_error(self) -> bool:
+        """True if this result represents an error."""
+        return self.kind == "error"
+
     def to_dict(self) -> dict[str, Any]:
-        """Serialize for LLM consumption."""
+        """Return the data dict for LLM consumption."""
         return self.data
+
+    def to_json(self) -> str:
+        """Serialize to JSON string for LLM consumption."""
+        return json.dumps(self.data)
 
     @classmethod
     def from_ref(cls, ref: Ref[Any]) -> ToolResult:

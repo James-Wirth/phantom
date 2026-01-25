@@ -717,7 +717,7 @@ class Session:
         return value
 
     def handle_tool_call(
-        self, name: str, arguments: dict[str, Any], *, catch_errors: bool = False
+        self, name: str, arguments: dict[str, Any] | str, *, catch_errors: bool = False
     ) -> ToolResult:
         """
         Handle any LLM tool call within this session.
@@ -730,7 +730,7 @@ class Session:
 
         Args:
             name: Tool/operation name from LLM
-            arguments: Arguments dict (may contain "@ref_id" strings)
+            arguments: Arguments dict or JSON string (may contain "@ref_id" strings)
             catch_errors: If True, catch ResolutionError and return structured
                 error result instead of raising
 
@@ -741,15 +741,20 @@ class Session:
             for tool_call in response.tool_calls:
                 result = session.handle_tool_call(
                     tool_call.function.name,
-                    json.loads(tool_call.function.arguments),
+                    tool_call.function.arguments,  # JSON string or dict
                     catch_errors=True,
                 )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": json.dumps(result.to_dict())
+                    "content": result.to_json(),
                 })
         """
+        import json
+
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments)
+
         try:
             if name == "peek":
                 ref_id = arguments.get("ref") or arguments.get("ref_id")
