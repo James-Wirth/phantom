@@ -36,9 +36,9 @@ cd phantom
 pip install -e .
 ```
 
-## Defining Operations
+## Defining Operations and Inspectors
 
-Operations are regular Python functions registered with `@session.op`. Your function's docstring becomes the tool description for the LLM.
+**Operations** are Python functions that become LLM tools. The docstring becomes the tool description.
 
 ```python
 import pandas as pd
@@ -48,30 +48,39 @@ session = phantom.Session()
 
 @session.op
 def load_csv(path: str) -> pd.DataFrame:
-    """Load a CSV file as a DataFrame."""
+    """Load a CSV file into a DataFrame."""
     return pd.read_csv(path)
 
 @session.op
-def merge(left: phantom.Ref[pd.DataFrame], right: phantom.Ref[pd.DataFrame], on: str) -> pd.DataFrame:
-    """Merge two DataFrames on a key column."""
-    return left.merge(right, on=on)
+def filter_rows(df: phantom.Ref[pd.DataFrame], column: str, value: str) -> pd.DataFrame:
+    """Filter rows where column equals value."""
+    return df[df[column] == value]
 
 @session.op
-def groupby_agg(df: phantom.Ref[pd.DataFrame], by: list[str], agg: dict) -> pd.DataFrame:
-    """Group by columns and aggregate. Example: agg={"profit": "sum"}"""
-    return df.groupby(by, as_index=False).agg(agg)
-
-@session.op
-def sort_values(df: phantom.Ref[pd.DataFrame], by: str, ascending: bool = True) -> pd.DataFrame:
-    """Sort DataFrame by column."""
-    return df.sort_values(by, ascending=ascending)
+def get_mean(df: phantom.Ref[pd.DataFrame], column: str) -> float:
+    """Calculate the mean of a column."""
+    return df[column].mean()
 ```
 
-The key insight: **parameters typed as `Ref[T]` are automatically resolved** before your function runs. You write normal pandas code that receives normal DataFrames.
+Parameters typed as `Ref[T]` are resolved automatically. You write normal code and Phantom handles the wiring.
+
+**Inspectors** define how data types appear when the LLM calls `peek()`. They return a summary dict instead of raw data:
+
+```python
+@session.inspector(pd.DataFrame)
+def inspect_dataframe(df: pd.DataFrame) -> dict:
+    return {
+        "shape": list(df.shape),
+        "columns": list(df.columns),
+        "sample": df.head(3).to_dict("records"),
+    }
+```
+
+Now when the LLM peeks at a DataFrame ref, it sees shape and schema (not 10,000 rows!).
 
 ## Wiring Up Your LLM
 
-Phantom auto-generates tool definitions from your operations and handles tool calls uniformly:
+Phantom auto-generates tool definitions from your operations and handles tool calls elegantly:
 
 ```python
 import openai
@@ -112,22 +121,41 @@ final_data = session.resolve(result.ref)
 
 `handle_tool_call` accepts JSON strings or dicts and returns refs for lazy operations, immediate results for `peek`. The LLM sees just enough to make decisions.
 
-## Example: AI Data Analyst
+## Contrib Modules
 
-Imagine a user asks: *"What's our most profitable customer segment?"*
+Phantom provides pre-built operation sets for common data libraries. Install the optional dependencies and register them with your session:
 
-The LLM doesn't need to see 10,000 rows of data to answer this. It needs to know the schema, understand the relationships, and compose the right transformations. Here's how it works with Phantom:
+```bash
+pip install phantom[pandas]    # Pandas
+pip install phantom[polars]    # Polars
+pip install phantom[duckdb]    # SQL (via DuckDB)
+pip install phantom[all]       # All contrib modules
+```
+
+```python
+from phantom import Session
+from phantom.contrib.pandas import pandas_ops
+
+session = Session()
+session.register(pandas_ops)  # registers Pandas operations 
+```
+
+Each contrib module provides domain-specific operations (`read_csv`, `filter_rows`, `groupby_agg`, etc.) and inspectors that help the LLM understand data shapes and schemas.
+
+## Example: AI Data Scientist
+
+This example uses the **pandas contrib** module to let an LLM analyze data without seeing it.
 
 > **User:** What's our most profitable customer segment?
 
 | Step | Tool Call | Response |
 |:----:|-----------|----------|
-| 1 | `load_csv(path="orders.csv")` | `@a3f2` |
-| 2 | `load_csv(path="customers.csv")` | `@b4c3` |
+| 1 | `read_csv(path="orders.csv")` | `@a3f2` |
+| 2 | `read_csv(path="customers.csv")` | `@b4c3` |
 | 3 | `peek(ref="@a3f2")` | `shape: [10000, 4], columns: [order_id, customer_id, quantity, profit]` |
 | 4 | `peek(ref="@b4c3")` | `shape: [500, 3], columns: [customer_id, name, segment]` |
 | 5 | `merge(left="@a3f2", right="@b4c3", on="customer_id")` | `@c5d6` |
-| 6 | `groupby_agg(df="@c5d6", by=["segment"], agg={"profit": "sum"})` | `@d7e8` |
+| 6 | `groupby_agg(df="@c5d6", by=["segment"], aggregations={"profit": "sum"})` | `@d7e8` |
 | 7 | `sort_values(df="@d7e8", by="profit", ascending=false)` | `@e9f0` |
 | 8 | `peek(ref="@e9f0")` | `shape: [3, 2], columns: [segment, profit]` |
 
@@ -143,17 +171,7 @@ result = session.resolve("@e9f0")
 Nothing executes until you call `resolve()`. The LLM builds a DAG of operations and you decide when to run it.
 
 ### Data Inspection with `peek`
-Let the LLM see schema, shape, and sample rows—not the full dataset. Register custom inspectors for your data types:
-```python
-@session.inspector(pd.DataFrame)
-def inspect_df(df: pd.DataFrame) -> dict:
-    return {
-        "shape": list(df.shape),
-        "columns": list(df.columns),
-        "dtypes": df.dtypes.astype(str).to_dict(),
-        "sample": df.head(3).to_dict("records"),
-    }
-```
+The built-in `peek` operation lets the LLM see data summaries without the full content. Contrib modules register inspectors automatically (but you can also define your own for custom types - see above).
 
 ### Session Isolation
 Run concurrent analyses without ref collisions:
@@ -174,7 +192,7 @@ loaded = session.load_graph("analysis.json")
 When resolution fails, see the full ref chain:
 ```python
 except ResolutionError as e:
-    print(e.chain)  # ['@a3f2', '@b4c3', '@d5e4'] — trace the failure path
+    print(e.chain)  # ['@a3f2', '@b4c3', '@d5e4'] - trace the failure path
 ```
 
 ### Async Support
