@@ -133,10 +133,10 @@ pip install phantom[all]       # All contrib modules
 ```
 
 ```python
-from phantom import Session
+import phantom
 from phantom.contrib.pandas import pandas_ops
 
-session = Session()
+session = phantom.Session()
 session.register(pandas_ops)  # registers Pandas operations 
 ```
 
