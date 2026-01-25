@@ -39,6 +39,7 @@ Example:
 """
 
 from ._errors import CycleError, ResolutionError
+from ._operation_set import OperationSet
 from ._ref import Ref
 from ._result import ToolResult
 from ._session import Session
@@ -48,6 +49,7 @@ __all__ = [
     "Ref",
     "ToolResult",
     "Session",
+    "OperationSet",
     # Errors
     "ResolutionError",
     "CycleError",

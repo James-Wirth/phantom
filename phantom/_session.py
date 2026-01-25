@@ -11,6 +11,7 @@ from typing import Any, TypeVar
 
 from ._errors import ResolutionError
 from ._graph import group_by_level, topological_order
+from ._operation_set import OperationSet
 from ._ref import Ref
 from ._result import ToolResult
 
@@ -95,6 +96,65 @@ class Session:
         name = func.__name__
         self._operations[name] = func
         return func
+
+    def register(
+        self,
+        *items: Callable[..., Any] | OperationSet,
+        name: str | None = None,
+    ) -> Session:
+        """
+        Register operations explicitly.
+
+        This is an alternative to the @session.op decorator for cases where
+        you define operations in separate modules or want explicit control.
+
+        Args:
+            *items: Functions or OperationSets to register
+            name: Custom operation name (only valid with single function)
+
+        Returns:
+            self (for method chaining)
+
+        Raises:
+            ValueError: If name provided with multiple items, or no items given
+            TypeError: If item is not callable or OperationSet
+
+        Example:
+            # Register individual functions
+            session.register(load_csv, merge, filter)
+
+            # Register with custom name
+            session.register(load_csv, name="load")
+
+            # Register an OperationSet
+            from ops.data import data_ops
+            session.register(data_ops)
+
+            # Chain registrations
+            session.register(data_ops).register(utils_ops)
+
+            # Mix functions and sets
+            session.register(data_ops, standalone_func)
+        """
+        if not items:
+            raise ValueError("register() requires at least one item")
+
+        if name is not None and len(items) != 1:
+            raise ValueError("'name' can only be used with a single function")
+
+        for item in items:
+            if isinstance(item, OperationSet):
+                for op_name, func in item:
+                    self._operations[op_name] = func
+            elif callable(item):
+                op_name = name if name is not None else item.__name__
+                self._operations[op_name] = item
+            else:
+                raise TypeError(
+                    f"Expected callable or OperationSet, got {type(item).__name__}"
+                )
+
+        return self
 
     def list_operations(self) -> list[str]:
         """List all operations registered in this session."""
