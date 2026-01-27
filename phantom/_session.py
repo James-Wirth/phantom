@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import uuid
 from collections.abc import Callable
 from concurrent.futures import Executor
-from typing import Any, TypeVar
+from contextlib import contextmanager
+from typing import Any, TypeVar, get_origin
 
-from ._errors import ResolutionError
+from ._cache import LRUCache
+from ._errors import ResolutionError, TypeValidationError
 from ._graph import group_by_level, topological_order
 from ._operation_set import OperationSet
 from ._ref import Ref
@@ -61,6 +64,8 @@ class Session:
         self,
         session_id: str | None = None,
         strict_hooks: bool = False,
+        cache_max_size: int | None = None,
+        cache_max_bytes: int | None = None,
     ):
         """
         Create a new isolated session.
@@ -68,14 +73,20 @@ class Session:
         Args:
             session_id: Optional custom ID. Auto-generated if not provided.
             strict_hooks: If True, hook errors are re-raised instead of logged.
+            cache_max_size: Max number of cached values. None = unlimited.
+            cache_max_bytes: Max total cache size in bytes. None = unlimited.
         """
         self.id = session_id or f"session_{uuid.uuid4().hex[:8]}"
         self._refs: dict[str, Ref[Any]] = {}
-        self._value_cache: dict[str, Any] = {}
+        self._value_cache = LRUCache(
+            max_size=cache_max_size,
+            max_bytes=cache_max_bytes,
+        )
         self._operations: dict[str, Callable[..., Any]] = {}
         self._inspectors: dict[type, Callable[[Any], dict[str, Any]]] = {}
         self._strict_hooks = strict_hooks
         self._reverse_deps: dict[str, set[str]] = {}
+        self._thread_lock = threading.Lock()
 
         self._hooks: dict[str, list[Callable[..., None]]] = {
             "before_resolve": [],
@@ -299,6 +310,20 @@ class Session:
 
             self._emit("on_progress", completed=completed, total=total, current=node)
 
+            try:
+                op_func = self._get_operation(node.op)
+                sig = self._get_operation_signature(node.op)
+            except KeyError as e:
+                chain = [r.id for r in order[: order.index(node) + 1]]
+                raise ResolutionError(
+                    f"Unknown operation: {node.op}",
+                    node,
+                    chain,
+                    e,
+                ) from e
+
+            params = sig.get("params", {})
+
             resolved_args: dict[str, Any] = {}
             for key, value in node.args.items():
                 if isinstance(value, Ref):
@@ -310,20 +335,16 @@ class Session:
                             node,
                             chain,
                         )
-                    resolved_args[key] = self._value_cache[value.id]
+                    cached_value = self._value_cache.get(value.id)
+
+                    param_info = params.get(key, {})
+                    expected_type = param_info.get("ref_inner_type")
+                    chain = [r.id for r in order[: order.index(node) + 1]]
+                    self._validate_type(cached_value, expected_type, value, key, chain)
+
+                    resolved_args[key] = cached_value
                 else:
                     resolved_args[key] = value
-
-            try:
-                op_func = self._get_operation(node.op)
-            except KeyError as e:
-                chain = [r.id for r in order[: order.index(node) + 1]]
-                raise ResolutionError(
-                    f"Unknown operation: {node.op}",
-                    node,
-                    chain,
-                    e,
-                ) from e
 
             self._emit("before_resolve", ref=node, args=resolved_args)
 
@@ -340,11 +361,11 @@ class Session:
                 ) from e
 
             self._emit("after_resolve", ref=node, result=result)
-            self._value_cache[node.id] = result
+            self._value_cache.set(node.id, result, self._reverse_deps)
             completed += 1
 
         self._emit("on_progress", completed=total, total=total, current=None)
-        return self._value_cache[ref.id]
+        return self._value_cache.get(ref.id)
 
     def _build_reverse_deps(self, order: list[Ref[Any]]) -> None:
         """Build reverse dependency map for cache invalidation."""
@@ -439,7 +460,7 @@ class Session:
                 completed += 1
             self._emit("on_progress", completed=total, total=total, current=None)
 
-        return self._value_cache[ref.id]
+        return self._value_cache.get(ref.id)
 
     async def _execute_one_async(
         self,
@@ -447,24 +468,12 @@ class Session:
         order: list[Ref[Any]],
         executor: Executor | None = None,
     ) -> None:
-        """Execute a single operation asynchronously."""
-        resolved_args: dict[str, Any] = {}
-        for key, value in node.args.items():
-            if isinstance(value, Ref):
-                if value.id not in self._value_cache:
-                    chain = [r.id for r in order[: order.index(node) + 1]]
-                    raise ResolutionError(
-                        f"Cache miss for ref {value.id} - dependency not "
-                        "resolved (possible bug in parallel execution)",
-                        node,
-                        chain,
-                    )
-                resolved_args[key] = self._value_cache[value.id]
-            else:
-                resolved_args[key] = value
+        """Execute a single operation asynchronously (thread-safe with executor)."""
+        use_lock = executor is not None
 
         try:
             op_func = self._get_operation(node.op)
+            sig = self._get_operation_signature(node.op)
         except KeyError as e:
             chain = [r.id for r in order[: order.index(node) + 1]]
             raise ResolutionError(
@@ -473,6 +482,31 @@ class Session:
                 chain,
                 e,
             ) from e
+
+        params = sig.get("params", {})
+
+        resolved_args: dict[str, Any] = {}
+        for key, value in node.args.items():
+            if isinstance(value, Ref):
+                with self._optional_lock(use_lock):
+                    if value.id not in self._value_cache:
+                        chain = [r.id for r in order[: order.index(node) + 1]]
+                        raise ResolutionError(
+                            f"Cache miss for ref {value.id} - dependency not "
+                            "resolved (possible bug in parallel execution)",
+                            node,
+                            chain,
+                        )
+                    cached_value = self._value_cache.get(value.id)
+
+                param_info = params.get(key, {})
+                expected_type = param_info.get("ref_inner_type")
+                chain = [r.id for r in order[: order.index(node) + 1]]
+                self._validate_type(cached_value, expected_type, value, key, chain)
+
+                resolved_args[key] = cached_value
+            else:
+                resolved_args[key] = value
 
         self._emit("before_resolve", ref=node, args=resolved_args)
 
@@ -497,7 +531,9 @@ class Session:
             ) from e
 
         self._emit("after_resolve", ref=node, result=result)
-        self._value_cache[node.id] = result
+
+        with self._optional_lock(use_lock):
+            self._value_cache.set(node.id, result, self._reverse_deps)
 
     def list_refs(self) -> list[Ref[Any]]:
         """List all refs in this session."""
@@ -585,6 +621,65 @@ class Session:
                 if self._strict_hooks:
                     raise
 
+    @contextmanager
+    def _optional_lock(self, use_lock: bool):
+        """Context manager for optional thread locking."""
+        if use_lock:
+            with self._thread_lock:
+                yield
+        else:
+            yield
+
+    def _validate_type(
+        self,
+        value: Any,
+        expected_type: type | tuple[type, ...] | None,
+        ref: Ref[Any],
+        param_name: str,
+        chain: list[str],
+    ) -> None:
+        """
+        Validate that a value matches the expected Ref[T] type.
+
+        Args:
+            value: The resolved value to check
+            expected_type: The type(s) from Ref[T] annotation
+            ref: The ref being resolved (for error context)
+            param_name: Name of the parameter (for error message)
+            chain: Resolution chain (for error context)
+
+        Raises:
+            TypeValidationError: If type doesn't match
+        """
+        if expected_type is None:
+            return
+
+        if isinstance(expected_type, tuple):
+            if not isinstance(value, expected_type):
+                type_names = " | ".join(t.__name__ for t in expected_type)
+                raise TypeValidationError(
+                    f"Type mismatch for parameter '{param_name}': "
+                    f"expected {type_names}, got {type(value).__name__}",
+                    ref,
+                    chain,
+                    expected_type,
+                    type(value),
+                )
+            return
+
+        origin = get_origin(expected_type)
+        check_type = origin if origin is not None else expected_type
+
+        if not isinstance(value, check_type):
+            raise TypeValidationError(
+                f"Type mismatch for parameter '{param_name}': "
+                f"expected {expected_type}, got {type(value).__name__}",
+                ref,
+                chain,
+                expected_type,
+                type(value),
+            )
+
     def clear_hooks(self, event: str | None = None) -> None:
         """
         Clear session's hooks.
@@ -627,22 +722,7 @@ class Session:
             self._value_cache.clear()
             return count
 
-        invalidated: set[str] = set()
-        self._cascade_invalidate(ref_id, invalidated, cascade)
-        return len(invalidated)
-
-    def _cascade_invalidate(
-        self, ref_id: str, invalidated: set[str], cascade: bool
-    ) -> None:
-        """Recursively invalidate a ref and optionally its dependents."""
-        if ref_id in invalidated:
-            return
-        if ref_id in self._value_cache:
-            del self._value_cache[ref_id]
-            invalidated.add(ref_id)
-        if cascade:
-            for dep_id in self._reverse_deps.get(ref_id, []):
-                self._cascade_invalidate(dep_id, invalidated, cascade)
+        return self._value_cache.delete(ref_id, self._reverse_deps, cascade=cascade)
 
     def peek(self, ref: Ref[Any] | str) -> dict[str, Any]:
         """

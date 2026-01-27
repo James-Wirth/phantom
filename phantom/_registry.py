@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from typing import Any, get_origin, get_type_hints
+from types import UnionType
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from ._ref import Ref
 
@@ -15,6 +16,36 @@ def _is_ref_type(type_hint: Any) -> bool:
         return True
     origin = get_origin(type_hint)
     return origin is Ref
+
+
+def _extract_ref_inner_type(type_hint: Any) -> type | tuple[type, ...] | None:
+    """
+    Extract the inner type T from Ref[T].
+
+    Args:
+        type_hint: A type hint that is known to be Ref or Ref[T]
+
+    Returns:
+        - None if bare Ref (no type parameter)
+        - A single type for Ref[SomeType]
+        - A tuple of types for Ref[A | B] (union types)
+    """
+    if type_hint is Ref:
+        return None
+
+    args = get_args(type_hint)
+    if not args:
+        return None
+
+    inner_type = args[0]
+
+    inner_origin = get_origin(inner_type)
+    if inner_origin is Union or inner_origin is UnionType:
+        union_args = get_args(inner_type)
+        types = tuple(t for t in union_args if t is not type(None))
+        return types if len(types) > 1 else (types[0] if types else None)
+
+    return inner_type
 
 
 def _python_type_to_json_schema(type_name: str) -> str:
@@ -59,6 +90,10 @@ def get_operation_signature_from_func(
             else:
                 param_info["type"] = str(type_hint)
             param_info["is_ref"] = _is_ref_type(type_hint)
+
+            if param_info["is_ref"]:
+                param_info["ref_inner_type"] = _extract_ref_inner_type(type_hint)
+
         if param.default is not inspect.Parameter.empty:
             param_info["default"] = param.default
         params[param_name] = param_info
