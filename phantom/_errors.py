@@ -42,6 +42,41 @@ class ResolutionError(Exception):
         )
 
 
+class TypeValidationError(ResolutionError):
+    """
+    Type mismatch during resolution.
+
+    Raised when a resolved value's type doesn't match the expected
+    Ref[T] parameter type declared in the operation signature.
+
+    Attributes:
+        ref: The ref that produced the mismatched value
+        chain: List of ref IDs from root to the failing ref
+        expected_type: The type declared in Ref[T]
+        actual_type: The actual type of the resolved value
+    """
+
+    def __init__(
+        self,
+        message: str,
+        ref: Ref,
+        chain: list[str],
+        expected_type: type,
+        actual_type: type,
+    ):
+        self.expected_type = expected_type
+        self.actual_type = actual_type
+        super().__init__(message, ref, chain)
+
+    def _format_message(self, message: str) -> str:
+        base = super()._format_message(message)
+        return (
+            f"{base}\n"
+            f"  Expected: {self.expected_type}\n"
+            f"  Actual: {self.actual_type}"
+        )
+
+
 class CycleError(Exception):
     """
     Cycle detected in the computation graph.
