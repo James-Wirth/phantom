@@ -38,7 +38,7 @@ Example:
     loaded = session.load_graph("pipeline.json")
 """
 
-from ._errors import CycleError, ResolutionError
+from ._errors import CycleError, ResolutionError, TypeValidationError
 from ._operation_set import OperationSet
 from ._ref import Ref
 from ._result import ToolResult
@@ -52,5 +52,6 @@ __all__ = [
     "OperationSet",
     # Errors
     "ResolutionError",
+    "TypeValidationError",
     "CycleError",
 ]
