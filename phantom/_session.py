@@ -1,4 +1,4 @@
-"""Session - Isolated context for concurrent LLM conversations."""
+"""Session - Isolated context for LLM conversations."""
 
 from __future__ import annotations
 
@@ -26,6 +26,17 @@ class Session:
     Each session maintains its own operation registry and ref storage,
     providing complete isolation between concurrent LLM sessions.
     Operations are registered using the @session.op decorator.
+
+    **Important**: Sessions are designed for single-owner use (one thread or
+    coroutine context). For multi-threaded servers (FastAPI, Flask), create
+    a fresh session per request rather than sharing across threads.
+
+    Can be used as a context manager for clean lifecycle management:
+
+        with Session() as session:
+            session.register(my_ops)
+            result = session.resolve(ref)
+        # Session is cleared on exit
 
     Example:
         session = phantom.Session()
@@ -72,6 +83,14 @@ class Session:
             "on_error": [],
             "on_progress": [],
         }
+
+    def __enter__(self) -> Session:
+        """Enter context manager."""
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        """Exit context manager, clearing session state."""
+        self.clear()
 
     def op(self, func: Callable[..., T]) -> Callable[..., T]:
         """
@@ -219,7 +238,6 @@ class Session:
         Raises:
             KeyError: If op_name is not registered in this session
         """
-
         self._get_operation(op_name)
 
         new_ref: Ref[Any] = Ref(op=op_name, args=kwargs)
@@ -284,6 +302,14 @@ class Session:
             resolved_args: dict[str, Any] = {}
             for key, value in node.args.items():
                 if isinstance(value, Ref):
+                    if value.id not in self._value_cache:
+                        chain = [r.id for r in order[: order.index(node) + 1]]
+                        raise ResolutionError(
+                            f"Cache miss for ref {value.id} - dependency not "
+                            "resolved (possible bug in topological ordering)",
+                            node,
+                            chain,
+                        )
                     resolved_args[key] = self._value_cache[value.id]
                 else:
                     resolved_args[key] = value
@@ -425,6 +451,14 @@ class Session:
         resolved_args: dict[str, Any] = {}
         for key, value in node.args.items():
             if isinstance(value, Ref):
+                if value.id not in self._value_cache:
+                    chain = [r.id for r in order[: order.index(node) + 1]]
+                    raise ResolutionError(
+                        f"Cache miss for ref {value.id} - dependency not "
+                        "resolved (possible bug in parallel execution)",
+                        node,
+                        chain,
+                    )
                 resolved_args[key] = self._value_cache[value.id]
             else:
                 resolved_args[key] = value
