@@ -90,3 +90,21 @@ class CycleError(Exception):
         self.chain = chain
         chain_str = " -> ".join(chain + [ref_id])
         super().__init__(f"Cycle detected: {chain_str}")
+
+
+class MaxTurnsError(Exception):
+    """
+    Chat conversation exceeded the maximum turn limit.
+
+    Raised when a Chat.ask() call loops through more LLM
+    round-trips than the configured max_turns without the
+    model producing a final text response.
+    """
+
+    def __init__(self, turns: int, max_turns: int):
+        self.turns = turns
+        self.max_turns = max_turns
+        super().__init__(
+            f"Chat exceeded {max_turns} turns without completing "
+            f"({turns} turns executed)"
+        )

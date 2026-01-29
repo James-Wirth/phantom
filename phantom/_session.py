@@ -192,6 +192,11 @@ class Session:
         """List all operations registered in this session."""
         return list(self._operations.keys())
 
+    @property
+    def operations(self) -> dict[str, Callable[..., Any]]:
+        """Read-only copy of the registered operations dict."""
+        return dict(self._operations)
+
     def inspector(
         self, data_type: type
     ) -> Callable[[Callable[[Any], dict[str, Any]]], Callable[[Any], dict[str, Any]]]:

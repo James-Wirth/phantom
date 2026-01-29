@@ -38,8 +38,17 @@ Example:
     loaded = session.load_graph("pipeline.json")
 """
 
-from ._errors import CycleError, ResolutionError, TypeValidationError
+from ._chat import Chat, ChatResponse
+from ._errors import CycleError, MaxTurnsError, ResolutionError, TypeValidationError
 from ._operation_set import OperationSet
+from ._providers import (
+    CallOptions,
+    LLMProvider,
+    ProviderResponse,
+    ProviderToolCall,
+    Usage,
+    register_provider,
+)
 from ._ref import Ref
 from ._result import ToolResult
 from ._session import Session
@@ -50,8 +59,19 @@ __all__ = [
     "ToolResult",
     "Session",
     "OperationSet",
+    # LLM interface
+    "Chat",
+    "ChatResponse",
+    # Provider interface
+    "LLMProvider",
+    "CallOptions",
+    "Usage",
+    "ProviderResponse",
+    "ProviderToolCall",
+    "register_provider",
     # Errors
     "ResolutionError",
     "TypeValidationError",
     "CycleError",
+    "MaxTurnsError",
 ]
