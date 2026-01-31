@@ -4,67 +4,66 @@
   <br>phantom
 </h1>
   <p align="center">
-    Let LLMs orchestrate data pipelines without seeing the data.
+    Semantic references and lazy DAGs for LLM data pipelines.
     <br><br>
     <a href="https://github.com/James-Wirth/phantom/actions/workflows/ci.yml"><img src="https://github.com/James-Wirth/phantom/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   </p>
 </p>
 
-Phantom creates a symbolic layer between your LLM and your data. The LLM reasons with opaque references (`@a3f2`) and builds a computation graph, while your code holds the actual data in memory. When you're ready, `resolve()` executes the graph and returns the result.
+Phantom is a Python framework for building LLM-assisted data pipelines. The LLM doesn't need to see your data. It reasons with opaque semantic references (`@a3f2`) and builds a lazy computation graph using your registered operations. The graph executes locally. This means zero data in the prompt, deterministic execution and pipelines you can inspect, cache and replay.
 
-## The Problem
+## Quick Start
 
-When building LLM-powered data analysis tools, you face a dilemma:
-
-1. **Send the data to the LLM**. Wastes tokens, hits context limits, exposes sensitive information
-2. **Hard-code the pipeline**. No flexibility, defeats the purpose of using an LLM
-
-Phantom offers a third way: the LLM builds the pipeline symbolically and your code executes it.
-
-## Installation
-
-Install directly from GitHub:
 ```bash
 pip install git+https://github.com/James-Wirth/phantom.git
 ```
 
-Or clone and install in development mode:
-```bash
-git clone https://github.com/James-Wirth/phantom.git
-cd phantom
-pip install -e .
-```
-
-## Defining Operations and Inspectors
-
-**Operations** are Python functions that become LLM tools. The docstring becomes the tool description.
-
 ```python
-import pandas as pd
 import phantom
+import pandas as pd
 
 session = phantom.Session()
 
 @session.op
-def load_csv(path: str) -> pd.DataFrame:
-    """Load a CSV file into a DataFrame."""
-    return pd.read_csv(path)
+def load(name: str) -> pd.DataFrame:
+    """Load a dataset. Available: neo_survey, missions, launches."""
+    return pd.read_parquet(DATA_DIR / f"{name}.parquet")
 
 @session.op
-def filter_rows(df: phantom.Ref[pd.DataFrame], column: str, value: str) -> pd.DataFrame:
-    """Filter rows where column equals value."""
-    return df[df[column] == value]
+def query(df: phantom.Ref[pd.DataFrame], expr: str) -> pd.DataFrame:
+    """Filter rows with a pandas query expression."""
+    return df.query(expr)
 
-@session.op
-def get_mean(df: phantom.Ref[pd.DataFrame], column: str) -> float:
-    """Calculate the mean of a column."""
-    return df[column].mean()
+chat = phantom.Chat(session, provider="anthropic")
+response = chat.ask("Which potentially hazardous near-Earth asteroids have an orbital period under 200 days?")
 ```
 
-Parameters typed as `Ref[T]` are resolved automatically. You write normal code and Phantom handles the wiring.
+## How It Works
 
-**Inspectors** define how data types appear when the LLM calls `peek()`. They return a summary dict instead of raw data:
+Phantom creates a **symbolic layer** between the LLM and your data. Each operation returns an opaque reference like `@a3f2` instead of real data. 
+
+| Step | LLM Tool Call | Response |
+|:----:|-----------|----------|
+| 1 | `load(name="neo_survey")` | `@a3f2` |
+| 2 | `peek(ref="@a3f2")` | `shape: [32000, 9], columns: [name, est_diameter_km, hazardous, ...]` |
+| 3 | `query(df="@a3f2", expr="hazardous == True & orbital_period < 200")` | `@b4c3` |
+| 4 | `peek(ref="@b4c3")` | `shape: [47, 9], sample: [{name: "2015 FP345", ...}]` |
+
+The LLM orchestrated a load, filter, and inspection across 32,000 asteroid records. The `Chat` class manages this entire loop. Since refs form a DAG, shared subgraphs are resolved once and cached (i.e. no redundant computation).
+
+## Operations and Inspectors
+
+**Operations** are Python functions decorated with `@session.op`. Docstrings become LLM tool descriptions. Parameters typed as `Ref[T]` are resolved automatically (i.e. you can just write normal Python).
+
+```python
+@session.op
+def merge(left: phantom.Ref[pd.DataFrame], right: phantom.Ref[pd.DataFrame], on: str) -> pd.DataFrame:
+    """Merge two DataFrames on a shared column."""
+    return pd.merge(left, right, on=on)
+```
+
+**Inspectors** define what the LLM sees when it peeks at data. 
 
 ```python
 @session.inspector(pd.DataFrame)
@@ -76,127 +75,124 @@ def inspect_dataframe(df: pd.DataFrame) -> dict:
     }
 ```
 
-Now when the LLM peeks at a DataFrame ref, it sees shape and schema (not 10,000 rows!).
+## The Chat Interface
 
-## Wiring Up Your LLM
-
-Phantom auto-generates tool definitions from your operations and handles tool calls elegantly:
+`phantom.Chat` is the high-level interface for multi-turn LLM conversations. It handles the tool-call loop, message history, and ref tracking:
 
 ```python
-import openai
+chat = phantom.Chat(
+    session,
+    provider="anthropic",
+    model="claude-sonnet-4-20250514",
+    system="You are an astronomer.",
+    max_turns=50,
+)
 
-client = openai.OpenAI()
+r1 = chat.ask("Which exoplanets in the habitable zone have a mass under 5 Earth masses?")
+print(r1.text)
+print(r1.tool_calls_made)
+print(r1.usage.total_tokens)
 
-# using the Session instance defined above...
-tools = session.get_tools()
-
-messages = [{"role": "user", "content": "What's our most profitable segment by region?"}]
-
-while True:
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        tools=tools,
-        messages=messages,
-    )
-    message = response.choices[0].message
-
-    if message.tool_calls:
-        messages.append(message)
-        for tool_call in message.tool_calls:
-            result = session.handle_tool_call(
-                tool_call.function.name,
-                tool_call.function.arguments,  
-            )
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": result.to_json(),
-            })
-    else:
-        break
-
-# Execute the pipeline the LLM built
-final_data = session.resolve(result.ref)
+r2 = chat.ask("Of those, which orbit K-type stars?")
 ```
-
-`handle_tool_call` accepts JSON strings or dicts and returns refs for lazy operations, immediate results for `peek`. The LLM sees just enough to make decisions.
 
 ## Contrib Modules
 
-Phantom provides pre-built operation sets for common data libraries. Install the optional dependencies and register them with your session:
+Pre-built operation sets for common data libraries:
 
 ```bash
-pip install phantom[pandas]    # Pandas
-pip install phantom[polars]    # Polars
-pip install phantom[duckdb]    # SQL (via DuckDB)
-pip install phantom[all]       # All contrib modules
+pip install "phantom[pandas]"
+pip install "phantom[polars]"
+pip install "phantom[duckdb]"
+pip install "phantom[all]"
 ```
 
 ```python
-import phantom
 from phantom.contrib.pandas import pandas_ops
 
 session = phantom.Session()
-session.register(pandas_ops)  # registers Pandas operations 
+session.register(pandas_ops)  # adds read_csv, filter_rows, groupby_agg, merge, ...
+
+chat = phantom.Chat(session, provider="anthropic", system="You are an astrophysicist.")
+response = chat.ask("What's the median orbital eccentricity of confirmed exoplanets discovered by Kepler?")
 ```
 
-Each contrib module provides domain-specific operations (`read_csv`, `filter_rows`, `groupby_agg`, etc.) and inspectors that help the LLM understand data shapes and schemas.
+## Going Deeper
 
-## Example: AI Data Scientist
+### Manual Tool-Call Loop
 
-This example uses the **pandas contrib** module to let an LLM analyze data without seeing it.
-
-> **User:** What's our most profitable customer segment?
-
-| Step | Tool Call | Response |
-|:----:|-----------|----------|
-| 1 | `read_csv(path="orders.csv")` | `@a3f2` |
-| 2 | `read_csv(path="customers.csv")` | `@b4c3` |
-| 3 | `peek(ref="@a3f2")` | `shape: [10000, 4], columns: [order_id, customer_id, quantity, profit]` |
-| 4 | `peek(ref="@b4c3")` | `shape: [500, 3], columns: [customer_id, name, segment]` |
-| 5 | `merge(left="@a3f2", right="@b4c3", on="customer_id")` | `@c5d6` |
-| 6 | `groupby_agg(df="@c5d6", by=["segment"], aggregations={"profit": "sum"})` | `@d7e8` |
-| 7 | `sort_values(df="@d7e8", by="profit", ascending=false)` | `@e9f0` |
-| 8 | `peek(ref="@e9f0")` | `shape: [3, 2], columns: [segment, profit]` |
-
-The LLM orchestrated a multi-join, aggregation, and sort without ever seeing the underlying data. Your code then resolves the final ref:
+Phantom is designed to be hackable. If you need full control over the LLM interaction:
 
 ```python
-result = session.resolve("@e9f0")
+tools = session.get_tools()
+
+messages = [{"role": "user", "content": "Analyze sales by region"}]
+
+response = client.chat.completions.create(
+    model="gpt-4o", 
+    tools=tools, 
+    messages=messages
+)
+
+for tool_call in response.choices[0].message.tool_calls:
+    result = session.handle_tool_call(
+        tool_call.function.name, 
+        tool_call.function.arguments
+    )
+    # result.to_json() → send back to LLM
 ```
 
-## Key Features
+### Custom Providers
 
-### Lazy Evaluation
-Nothing executes until you call `resolve()`. The LLM builds a DAG of operations and you decide when to run it.
+Phantom supports Anthropic and OpenAI out of the box. But you can add your own protocols, e.g. for Ollama.
 
-### Data Inspection with `peek`
-The built-in `peek` operation lets the LLM see data summaries without the full content. Contrib modules register inspectors automatically (but you can also define your own for custom types - see above).
-
-### Session Isolation
-Run concurrent analyses without ref collisions:
 ```python
-session = phantom.Session("user_123")
-ref = session.ref("load_dataset", name="orders")
+from phantom import LLMProvider, register_provider
+
+class MyProvider:
+    """Implements the LLMProvider protocol."""
+    ...
+
+register_provider("my_provider", MyProvider)
+chat = phantom.Chat(session, provider="my_provider")
+```
+
+### Operation Sets
+
+Group related operations into reusable modules:
+
+```python
+from phantom import OperationSet
+
+analytics_ops = OperationSet()
+
+@analytics_ops.op
+def rolling_average(data: phantom.Ref[list], window: int) -> list:
+    """Compute a rolling average."""
+    ...
+
+session.register(analytics_ops)
+```
+
+### Session Features
+
+```python
+session = phantom.Session()
+
+# Lazy evaluation — nothing runs until you say so
+ref = session.ref("load_csv", path="data.csv")
 result = session.resolve(ref)
-```
 
-### Graph Serialization
-Save and replay pipelines:
-```python
-session.save_graph(ref, "analysis.json")
-loaded = session.load_graph("analysis.json")
-```
-
-### Rich Error Context
-When resolution fails, see the full ref chain:
-```python
-except ResolutionError as e:
-    print(e.chain)  # ['@a3f2', '@b4c3', '@d5e4'] - trace the failure path
-```
-
-### Async Support
-For I/O-bound operations, use `aresolve()` with parallel execution:
-```python
+# Async resolution with parallel execution
 result = await session.aresolve(ref, parallel=True)
+
+# Save and replay pipelines
+session.save_graph(ref, "pipeline.json")
+loaded = session.load_graph("pipeline.json")
+
+# Rich error context
+try:
+    session.resolve(bad_ref)
+except phantom.ResolutionError as e:
+    print(e.chain)  # ['@a3f2', '@b4c3'] — trace the failure path
 ```
