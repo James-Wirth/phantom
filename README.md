@@ -82,10 +82,8 @@ def inspect_dataframe(df: pd.DataFrame) -> dict:
 ```python
 chat = phantom.Chat(
     session,
-    provider="anthropic",
     model="claude-sonnet-4-20250514",
     system="You are an astronomer.",
-    max_turns=50,
 )
 
 r1 = chat.ask("Which exoplanets in the habitable zone have a mass under 5 Earth masses?")
@@ -94,6 +92,51 @@ print(r1.tool_calls_made)
 print(r1.usage.total_tokens)
 
 r2 = chat.ask("Of those, which orbit K-type stars?")
+```
+
+## LLM Providers
+
+Phantom has built-in support for **Anthropic**, **OpenAI**, and **Google Gemini**. Install the one you need:
+
+```bash
+pip install "phantom[anthropic]"
+pip install "phantom[openai]"
+pip install "phantom[google]"
+```
+
+Pass API keys directly or set the standard environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`):
+
+```python
+chat = phantom.Chat(
+    session,
+    provider=phantom.AnthropicProvider(api_key="sk-ant-..."),
+    model="claude-sonnet-4-20250514",
+)
+
+chat = phantom.Chat(
+    session,
+    provider=phantom.OpenAIProvider(api_key="sk-..."),
+    model="gpt-4o",
+)
+
+chat = phantom.Chat(
+    session,
+    provider=phantom.GoogleProvider(api_key="..."),
+    model="gemini-2.0-flash",
+)
+```
+
+Any **OpenAI-compatible** API (Groq, Together, Fireworks, Ollama, vLLM, ...) works via `base_url`:
+
+```python
+chat = phantom.Chat(
+    session,
+    provider=phantom.OpenAIProvider(
+        api_key="...",
+        base_url="https://api.groq.com/openai/v1",
+    ),
+    model="llama-3.1-70b-versatile",
+)
 ```
 
 ## Contrib Modules
@@ -111,13 +154,13 @@ pip install "phantom[all]"
 from phantom.contrib.pandas import pandas_ops
 
 session = phantom.Session()
-session.register(pandas_ops)  # adds read_csv, filter_rows, groupby_agg, merge, ...
+session.register(pandas_ops) # adds common Pandas operations
 
-chat = phantom.Chat(session, provider="anthropic", system="You are an astrophysicist.")
+chat = phantom.Chat(session, system="You are an astrophysicist.")
 response = chat.ask("What's the median orbital eccentricity of confirmed exoplanets discovered by Kepler?")
 ```
 
-## Going Deeper
+## Customization
 
 ### Manual Tool-Call Loop
 
@@ -129,32 +172,17 @@ tools = session.get_tools()
 messages = [{"role": "user", "content": "Analyze sales by region"}]
 
 response = client.chat.completions.create(
-    model="gpt-4o", 
-    tools=tools, 
+    model="gpt-4o",
+    tools=tools,
     messages=messages
 )
 
 for tool_call in response.choices[0].message.tool_calls:
     result = session.handle_tool_call(
-        tool_call.function.name, 
+        tool_call.function.name,
         tool_call.function.arguments
     )
     # result.to_json() → send back to LLM
-```
-
-### Custom Providers
-
-Phantom supports Anthropic and OpenAI out of the box. But you can add your own protocols, e.g. for Ollama.
-
-```python
-from phantom import LLMProvider, register_provider
-
-class MyProvider:
-    """Implements the LLMProvider protocol."""
-    ...
-
-register_provider("my_provider", MyProvider)
-chat = phantom.Chat(session, provider="my_provider")
 ```
 
 ### Operation Sets
@@ -179,7 +207,7 @@ session.register(analytics_ops)
 ```python
 session = phantom.Session()
 
-# Lazy evaluation — nothing runs until you say so
+# Lazy evaluation
 ref = session.ref("load_csv", path="data.csv")
 result = session.resolve(ref)
 

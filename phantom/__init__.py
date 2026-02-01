@@ -42,11 +42,15 @@ from ._chat import Chat, ChatResponse
 from ._errors import CycleError, MaxTurnsError, ResolutionError, TypeValidationError
 from ._operation_set import OperationSet
 from ._providers import (
+    AnthropicProvider,
     CallOptions,
+    GoogleProvider,
     LLMProvider,
+    OpenAIProvider,
     ProviderResponse,
     ProviderToolCall,
     Usage,
+    get_provider,
     register_provider,
 )
 from ._ref import Ref
@@ -64,10 +68,14 @@ __all__ = [
     "ChatResponse",
     # Provider interface
     "LLMProvider",
+    "AnthropicProvider",
+    "OpenAIProvider",
+    "GoogleProvider",
     "CallOptions",
     "Usage",
     "ProviderResponse",
     "ProviderToolCall",
+    "get_provider",
     "register_provider",
     # Errors
     "ResolutionError",

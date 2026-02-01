@@ -6,7 +6,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ._errors import MaxTurnsError
-from ._providers import CallOptions, Usage, get_provider
+from ._providers import (
+    CallOptions,
+    LLMProvider,
+    Usage,
+    _infer_provider,
+    get_provider,
+)
 from ._ref import Ref
 from ._session import Session
 from ._system_prompt import build_system_prompt
@@ -43,6 +49,9 @@ class Chat:
     Includes a Phantom system prompt explaining how refs, peek,
     and tool chaining work.
 
+    The *provider* argument accepts a name, a provider instance,
+    or ``None`` (auto-detects from *model*).
+
     Example::
 
         session = phantom.Session()
@@ -51,11 +60,20 @@ class Chat:
         def load_csv(path: str) -> pd.DataFrame:
             return pd.read_csv(path)
 
+        # By name (string)
+        chat = phantom.Chat(session, provider="anthropic")
+
+        # Auto-detect from model name
+        chat = phantom.Chat(session, model="gpt-4o")
+
+        # Pre-configured provider instance
         chat = phantom.Chat(
             session,
-            provider="anthropic",
-            model="claude-sonnet-4-20250514",
-            system="You are a data analyst.",
+            provider=phantom.OpenAIProvider(
+                api_key="sk-...",
+                base_url="https://api.groq.com/openai/v1",
+            ),
+            model="llama-3.1-70b-versatile",
         )
 
         response = chat.ask("Top 5 orders by revenue?")
@@ -67,7 +85,7 @@ class Chat:
         self,
         session: Session,
         *,
-        provider: str = "anthropic",
+        provider: str | LLMProvider | None = None,
         model: str | None = None,
         system: str = "",
         client: Any | None = None,
@@ -84,7 +102,10 @@ class Chat:
 
         Args:
             session: The Phantom session with registered ops.
-            provider: LLM provider name.
+            provider: LLM provider — a name (``"anthropic"``,
+                ``"openai"``, ``"google"``), a provider
+                instance, or ``None`` to auto-detect from
+                *model* (falls back to ``"anthropic"``).
             model: Model name (defaults per provider).
             system: Developer system prompt appended to
                 Phantom's built-in prompt.
@@ -101,8 +122,29 @@ class Chat:
                 SDK call.
         """
         self._session = session
-        self._provider_name = provider
-        self._provider = get_provider(provider)
+
+        if isinstance(provider, LLMProvider):
+            self._provider = provider
+            self._provider_name = type(provider).__name__
+        elif isinstance(provider, str):
+            self._provider = get_provider(provider)
+            self._provider_name = provider
+        elif provider is None:
+            inferred = (
+                _infer_provider(model)
+                if model is not None
+                else None
+            )
+            name = inferred or "anthropic"
+            self._provider = get_provider(name)
+            self._provider_name = name
+        else:
+            raise TypeError(
+                f"provider must be a string, LLMProvider "
+                f"instance, or None — "
+                f"got {type(provider).__name__}"
+            )
+
         self._model = model or self._provider.default_model()
         self._developer_system = system
         self._client = client or self._provider.create_client()
