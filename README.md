@@ -4,14 +4,14 @@
   <br>phantom
 </h1>
   <p align="center">
-    Semantic references and lazy DAGs for LLM data pipelines.
+    Semantic references and lazy DAGs for LLM-assisted workflows.
     <br><br>
     <a href="https://github.com/James-Wirth/phantom/actions/workflows/ci.yml"><img src="https://github.com/James-Wirth/phantom/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   </p>
 </p>
 
-Phantom is a Python framework for building LLM-assisted data pipelines. The LLM doesn't need to see your data. It reasons with opaque semantic references (`@a3f2`) and builds a lazy computation graph using your registered operations. The graph executes locally. This means zero data in the prompt, deterministic execution and pipelines you can inspect, cache and replay.
+Phantom is a Python framework for building LLM-assisted workflows. The LLMs don't need to see your data. They can reason with opaque semantic references (`@a3f2`), from which Phantom constructs a lazy computation graph using your registered operations. The graph execution is deterministic and runs locally on your machine.
 
 ## Quick Start
 
@@ -35,7 +35,11 @@ def query(df: phantom.Ref[pd.DataFrame], expr: str) -> pd.DataFrame:
     """Filter rows with a pandas query expression."""
     return df.query(expr)
 
-chat = phantom.Chat(session, provider="anthropic")
+chat = phantom.Chat(
+    session,
+    provider=phantom.AnthropicProvider(api_key="sk-ant-..."),
+    model="claude-sonnet-4-20250514",
+)
 response = chat.ask("Which potentially hazardous near-Earth asteroids have an orbital period under 200 days?")
 ```
 
@@ -50,49 +54,7 @@ Phantom creates a **symbolic layer** between the LLM and your data. Each operati
 | 3 | `query(df="@a3f2", expr="hazardous == True & orbital_period < 200")` | `@b4c3` |
 | 4 | `peek(ref="@b4c3")` | `shape: [47, 9], sample: [{name: "2015 FP345", ...}]` |
 
-The LLM orchestrated a load, filter, and inspection across 32,000 asteroid records. The `Chat` class manages this entire loop. Since refs form a DAG, shared subgraphs are resolved once and cached (i.e. no redundant computation).
-
-## Operations and Inspectors
-
-**Operations** are Python functions decorated with `@session.op`. Docstrings become LLM tool descriptions. Parameters typed as `Ref[T]` are resolved automatically (i.e. you can just write normal Python).
-
-```python
-@session.op
-def merge(left: phantom.Ref[pd.DataFrame], right: phantom.Ref[pd.DataFrame], on: str) -> pd.DataFrame:
-    """Merge two DataFrames on a shared column."""
-    return pd.merge(left, right, on=on)
-```
-
-**Inspectors** define what the LLM sees when it peeks at data. 
-
-```python
-@session.inspector(pd.DataFrame)
-def inspect_dataframe(df: pd.DataFrame) -> dict:
-    return {
-        "shape": list(df.shape),
-        "columns": list(df.columns),
-        "sample": df.head(3).to_dict("records"),
-    }
-```
-
-## The Chat Interface
-
-`phantom.Chat` is the high-level interface for multi-turn LLM conversations. It handles the tool-call loop, message history, and ref tracking:
-
-```python
-chat = phantom.Chat(
-    session,
-    model="claude-sonnet-4-20250514",
-    system="You are an astronomer.",
-)
-
-r1 = chat.ask("Which exoplanets in the habitable zone have a mass under 5 Earth masses?")
-print(r1.text)
-print(r1.tool_calls_made)
-print(r1.usage.total_tokens)
-
-r2 = chat.ask("Of those, which orbit K-type stars?")
-```
+The LLM orchestrated a load, filter, and inspection across 32,000 asteroid records. Since refs form a DAG, shared subgraphs are resolved once and cached (i.e. no redundant computation).
 
 ## LLM Providers
 
@@ -139,6 +101,19 @@ chat = phantom.Chat(
 )
 ```
 
+## The Chat Interface
+
+`phantom.Chat` is the high-level interface for multi-turn LLM conversations. It handles the tool-call loop, message history, and ref tracking:
+
+```python
+r1 = chat.ask("Which exoplanets in the habitable zone have a mass under 5 Earth masses?")
+print(r1.text)
+print(r1.tool_calls_made)
+print(r1.usage.total_tokens)
+
+r2 = chat.ask("Of those, which orbit K-type stars?")
+```
+
 ## Contrib Modules
 
 Pre-built operation sets for common data libraries:
@@ -162,6 +137,46 @@ response = chat.ask("What's the median orbital eccentricity of confirmed exoplan
 
 ## Customization
 
+### Operations and Inspectors
+
+**Operations** are Python functions decorated with `@session.op`. Docstrings become LLM tool descriptions. Parameters typed as `Ref[T]` are resolved automatically (i.e. you can just write normal Python).
+
+```python
+@session.op
+def merge(left: phantom.Ref[pd.DataFrame], right: phantom.Ref[pd.DataFrame], on: str) -> pd.DataFrame:
+    """Merge two DataFrames on a shared column."""
+    return pd.merge(left, right, on=on)
+```
+
+**Inspectors** define what the LLM sees when it peeks at data. 
+
+```python
+@session.inspector(pd.DataFrame)
+def inspect_dataframe(df: pd.DataFrame) -> dict:
+    return {
+        "shape": list(df.shape),
+        "columns": list(df.columns),
+        "sample": df.head(3).to_dict("records"),
+    }
+```
+
+### Operation Sets
+
+Group related operations into reusable modules:
+
+```python
+from phantom import OperationSet
+
+analytics_ops = OperationSet()
+
+@analytics_ops.op
+def rolling_average(data: phantom.Ref[list], window: int) -> list:
+    """Compute a rolling average."""
+    ...
+
+session.register(analytics_ops)
+```
+
 ### Manual Tool-Call Loop
 
 Phantom is designed to be hackable. If you need full control over the LLM interaction:
@@ -183,23 +198,6 @@ for tool_call in response.choices[0].message.tool_calls:
         tool_call.function.arguments
     )
     # result.to_json() → send back to LLM
-```
-
-### Operation Sets
-
-Group related operations into reusable modules:
-
-```python
-from phantom import OperationSet
-
-analytics_ops = OperationSet()
-
-@analytics_ops.op
-def rolling_average(data: phantom.Ref[list], window: int) -> list:
-    """Compute a rolling average."""
-    ...
-
-session.register(analytics_ops)
 ```
 
 ### Session Features
