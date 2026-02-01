@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+if TYPE_CHECKING:
+    from ._security import SecurityPolicy
 
 T = TypeVar("T")
 
@@ -46,10 +49,26 @@ class OperationSet:
         ref = session.ref("load_csv", path="data.csv")
     """
 
-    def __init__(self) -> None:
-        """Create a new empty operation set."""
+    def __init__(
+        self,
+        *,
+        default_policy: SecurityPolicy | None = None,
+    ) -> None:
+        """Create a new operation set.
+
+        Args:
+            default_policy: Optional security policy that will be
+                auto-applied when this set is registered with a session
+                that has ``secure=True`` (the default).
+        """
         self._operations: dict[str, Callable[..., Any]] = {}
         self._inspectors: dict[type, Callable[[Any], dict[str, Any]]] = {}
+        self._default_policy = default_policy
+
+    @property
+    def default_policy(self) -> SecurityPolicy | None:
+        """The default security policy for this operation set."""
+        return self._default_policy
 
     def op(self, func: Callable[..., T]) -> Callable[..., T]:
         """
@@ -127,6 +146,10 @@ class OperationSet:
 
     def __repr__(self) -> str:
         ops = list(self._operations.keys())
+        tag = ", secured" if self._default_policy else ""
         if len(ops) <= 3:
-            return f"OperationSet({ops})"
-        return f"OperationSet([{ops[0]!r}, {ops[1]!r}, ... +{len(ops) - 2} more])"
+            return f"OperationSet({ops}{tag})"
+        return (
+            f"OperationSet([{ops[0]!r}, {ops[1]!r}, "
+            f"... +{len(ops) - 2} more]{tag})"
+        )

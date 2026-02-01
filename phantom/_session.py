@@ -17,9 +17,12 @@ from ._graph import group_by_level, topological_order
 from ._operation_set import OperationSet
 from ._ref import Ref
 from ._result import ToolResult
+from ._security import SecurityPolicy
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
+
+_UNSET = object()
 
 
 class Session:
@@ -66,6 +69,8 @@ class Session:
         strict_hooks: bool = False,
         cache_max_size: int | None = None,
         cache_max_bytes: int | None = None,
+        policy: SecurityPolicy | None = _UNSET,  # type: ignore[assignment]
+        secure: bool = True,
     ):
         """
         Create a new isolated session.
@@ -75,6 +80,12 @@ class Session:
             strict_hooks: If True, hook errors are re-raised instead of logged.
             cache_max_size: Max number of cached values. None = unlimited.
             cache_max_bytes: Max total cache size in bytes. None = unlimited.
+            policy: Optional security policy. When set, guards are checked
+                before each operation executes.  Pass ``None`` explicitly
+                to disable all security (including auto-applied defaults).
+            secure: When ``True`` (the default), default security policies
+                from registered ``OperationSet`` instances are auto-applied.
+                Set to ``False`` to skip all automatic policy merging.
         """
         self.id = session_id or f"session_{uuid.uuid4().hex[:8]}"
         self._refs: dict[str, Ref[Any]] = {}
@@ -87,6 +98,13 @@ class Session:
         self._strict_hooks = strict_hooks
         self._reverse_deps: dict[str, set[str]] = {}
         self._thread_lock = threading.Lock()
+
+        if policy is _UNSET:
+            self._policy: SecurityPolicy | None = None
+            self._auto_merge = secure
+        else:
+            self._policy = policy
+            self._auto_merge = secure and policy is not None
 
         self._hooks: dict[str, list[Callable[..., None]]] = {
             "before_resolve": [],
@@ -178,6 +196,12 @@ class Session:
                     self._operations[op_name] = func
                 for dtype, inspector_fn in item.iter_inspectors():
                     self._inspectors[dtype] = inspector_fn
+
+                if self._auto_merge and item.default_policy is not None:
+                    if self._policy is None:
+                        self._policy = item.default_policy
+                    else:
+                        self._policy = self._policy | item.default_policy
             elif callable(item):
                 op_name = name if name is not None else item.__name__
                 self._operations[op_name] = item
@@ -353,6 +377,9 @@ class Session:
 
             self._emit("before_resolve", ref=node, args=resolved_args)
 
+            if self._policy is not None:
+                self._policy.check(node.op, resolved_args)
+
             try:
                 result = op_func(**resolved_args)
             except Exception as e:
@@ -514,6 +541,9 @@ class Session:
                 resolved_args[key] = value
 
         self._emit("before_resolve", ref=node, args=resolved_args)
+
+        if self._policy is not None:
+            self._policy.check(node.op, resolved_args)
 
         try:
             if asyncio.iscoroutinefunction(op_func):
