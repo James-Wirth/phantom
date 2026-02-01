@@ -56,15 +56,13 @@ from ._providers import (
 from ._ref import Ref
 from ._result import ToolResult
 from ._security import (
+    DEFAULT_DENY_PATTERNS,
     FileSizeGuard,
     Guard,
     PathGuard,
-    RegexGuard,
     SecurityError,
     SecurityPolicy,
     URLGuard,
-    file_policy,
-    http_policy,
 )
 from ._session import Session
 
@@ -89,15 +87,13 @@ __all__ = [
     "get_provider",
     "register_provider",
     # Security
+    "DEFAULT_DENY_PATTERNS",
     "SecurityError",
     "SecurityPolicy",
     "Guard",
     "PathGuard",
     "URLGuard",
-    "RegexGuard",
     "FileSizeGuard",
-    "file_policy",
-    "http_policy",
     # Errors
     "ResolutionError",
     "TypeValidationError",

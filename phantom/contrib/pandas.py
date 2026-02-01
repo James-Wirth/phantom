@@ -26,9 +26,16 @@ Usage:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from phantom import OperationSet, Ref
+from phantom._security import (
+    DEFAULT_DENY_PATTERNS,
+    FileSizeGuard,
+    PathGuard,
+    SecurityPolicy,
+)
 
 from ._base import require_dependency
 
@@ -36,7 +43,50 @@ pd = require_dependency("pandas", "pandas", "pandas")
 DataFrame = pd.DataFrame
 Series = pd.Series
 
-pandas_ops = OperationSet()
+_IO_OPS = ["read_csv", "read_parquet", "read_json", "read_excel"]
+
+
+def pandas_policy(
+    allowed_dirs: list[str | Path] | None = None,
+    *,
+    deny_patterns: list[str] | None = None,
+    max_file_bytes: int = 50_000_000,
+) -> SecurityPolicy:
+    """Create a security policy for pandas file operations.
+
+    Args:
+        allowed_dirs: Directories the file operations may access.  When
+            ``None``, no directory restriction is applied (deny patterns
+            and other guards still run).
+        deny_patterns: Glob patterns to block, checked against every path
+            component (default: ``["*.env", ".git"]``).
+        max_file_bytes: Maximum file size for read operations (default: 50 MB).
+
+    Returns:
+        A SecurityPolicy with PathGuard and FileSizeGuard bound to I/O ops.
+    """
+    if deny_patterns is None:
+        deny_patterns = list(DEFAULT_DENY_PATTERNS)
+    policy = SecurityPolicy()
+    policy.bind(
+        PathGuard(allowed_dirs, deny_patterns=deny_patterns),
+        ops=_IO_OPS,
+        args=["path"],
+    )
+    policy.bind(
+        FileSizeGuard(max_bytes=max_file_bytes),
+        ops=_IO_OPS,
+        args=["path"],
+    )
+    return policy
+
+
+def _default_pandas_policy() -> SecurityPolicy:
+    """Build the default security policy for pandas operations."""
+    return pandas_policy()
+
+
+pandas_ops = OperationSet(default_policy=_default_pandas_policy())
 
 
 # =============================================================================
@@ -77,12 +127,6 @@ def read_excel(path: str, sheet_name: str | int = 0) -> DataFrame:
 def select_columns(df: Ref[DataFrame], columns: list[str]) -> DataFrame:
     """Select specific columns from a DataFrame."""
     return df[columns]
-
-
-@pandas_ops.op
-def filter_rows(df: Ref[DataFrame], condition: str) -> DataFrame:
-    """Filter rows using a pandas query expression (e.g., 'age > 30')."""
-    return df.query(condition)
 
 
 @pandas_ops.op
@@ -140,16 +184,6 @@ def sort_values(
 def rename_columns(df: Ref[DataFrame], mapping: dict[str, str]) -> DataFrame:
     """Rename columns using a mapping of {old_name: new_name}."""
     return df.rename(columns=mapping)
-
-
-@pandas_ops.op
-def assign_column(df: Ref[DataFrame], column: str, expression: str) -> DataFrame:
-    """
-    Add or update a column using a pandas eval expression (e.g., 'quantity * price').
-    """
-    result = df.copy()
-    result[column] = result.eval(expression)
-    return result
 
 
 @pandas_ops.op
@@ -277,4 +311,4 @@ def _inspect_dataframe(df: DataFrame) -> dict[str, Any]:
 # Public API
 # =============================================================================
 
-__all__ = ["pandas_ops"]
+__all__ = ["pandas_ops", "pandas_policy"]

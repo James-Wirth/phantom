@@ -3,6 +3,17 @@ DuckDB operations for Phantom.
 
 Provides SQL-based analytics operations for LLM-driven data analysis.
 
+Security
+--------
+Connections created via ``connect()`` are hardened by default:
+
+- ``enable_external_access=false`` — blocks all filesystem and network I/O
+  from within SQL (``COPY``, ``read_csv_auto()``, ``FROM 'file.csv'``, etc.).
+- ``allowed_directories`` / ``allowed_paths`` — opt-in allowlists forwarded
+  from ``duckdb_policy()`` to restore access to specific locations.
+- Extension auto-install/load disabled.
+- ``lock_configuration=true`` — prevents SQL from reversing these settings.
+
 Installation:
     pip install phantom[duckdb]
 
@@ -13,12 +24,11 @@ Usage:
     session = Session()
     session.register(duckdb_ops)
 
-    # Query files directly with SQL
+    # Query files directly with SQL (only if allowed_dirs permits)
     result = session.ref("query", sql="SELECT * FROM 'data.csv' WHERE value > 100")
 
     # Or create tables and query them
     conn = session.ref("connect")
-    session.ref("execute", conn=conn, sql="CREATE TABLE t AS FROM 'data.parquet'")
     result = session.ref("query", conn=conn, sql="SELECT * FROM t WHERE value > 100")
 """
 
@@ -29,9 +39,16 @@ Usage:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from phantom import OperationSet, Ref
+from phantom._security import (
+    DEFAULT_DENY_PATTERNS,
+    FileSizeGuard,
+    PathGuard,
+    SecurityPolicy,
+)
 
 from ._base import require_dependency
 
@@ -39,7 +56,125 @@ duckdb = require_dependency("duckdb", "duckdb", "duckdb")
 DuckDBPyConnection = duckdb.DuckDBPyConnection
 DuckDBPyRelation = duckdb.DuckDBPyRelation
 
-duckdb_ops = OperationSet()
+_IO_OPS = ["read_csv", "read_parquet", "read_json"]
+
+
+def _quote_identifier(name: str) -> str:
+    """Quote a SQL identifier to prevent injection.
+
+    Uses double-quoting with proper escaping of embedded double-quotes.
+    Rejects names containing null bytes.
+    """
+    if "\x00" in name:
+        raise ValueError(f"Identifier contains null byte: {name!r}")
+    return '"' + name.replace('"', '""') + '"'
+
+
+# =============================================================================
+# Secure connection helper
+# =============================================================================
+
+_SECURE_CONFIG: dict[str, str] = {
+    "enable_external_access": "false",
+    "autoinstall_known_extensions": "false",
+    "autoload_known_extensions": "false",
+}
+
+
+def _secure_connect(
+    database: str = ":memory:",
+    *,
+    read_only: bool = False,
+    allowed_dirs: list[str | Path] | None = None,
+    allowed_paths: list[str | Path] | None = None,
+) -> DuckDBPyConnection:
+    """Create a DuckDB connection with security settings applied.
+
+    Disables external access by default, then optionally re-allows specific
+    directories/paths via DuckDB's native allowlists.  Finishes by locking
+    the configuration so injected SQL cannot reverse these settings.
+
+    Note: ``allowed_directories`` and ``allowed_paths`` are ``VARCHAR[]``
+    settings and must be applied via ``SET`` statements — passing them
+    through the ``config`` dict causes a crash (duckdb/duckdb#17128).
+    """
+    conn = duckdb.connect(
+        database=database, read_only=read_only, config=dict(_SECURE_CONFIG)
+    )
+    if allowed_dirs:
+        dirs = [str(Path(d).resolve()) for d in allowed_dirs]
+        conn.execute("SET allowed_directories = $dirs", {"dirs": dirs})
+    if allowed_paths:
+        paths = [str(Path(p).resolve()) for p in allowed_paths]
+        conn.execute("SET allowed_paths = $paths", {"paths": paths})
+    conn.execute("SET lock_configuration = true")
+    return conn
+
+
+_default_conn: DuckDBPyConnection | None = None
+
+
+def _get_default_conn() -> DuckDBPyConnection:
+    """Return (or lazily create) a locked-down default in-memory connection."""
+    global _default_conn
+    if _default_conn is None:
+        _default_conn = _secure_connect()
+    return _default_conn
+
+
+# =============================================================================
+# Policy
+# =============================================================================
+
+
+def duckdb_policy(
+    allowed_dirs: list[str | Path] | None = None,
+    *,
+    allowed_paths: list[str | Path] | None = None,
+    deny_patterns: list[str] | None = None,
+    max_file_bytes: int = 50_000_000,
+) -> SecurityPolicy:
+    """Create a security policy for DuckDB operations.
+
+    SQL safety is enforced by DuckDB's native controls
+    (``enable_external_access=false``, ``lock_configuration=true``,
+    extension auto-load disabled) which are applied in ``_secure_connect``.
+    This policy adds PathGuard and FileSizeGuard for file I/O operations.
+
+    Args:
+        allowed_dirs: Directories the file operations may access.  When
+            ``None``, no directory restriction is applied (deny patterns
+            and other guards still run).  Also forwarded to DuckDB's
+            ``allowed_directories`` setting on new connections.
+        allowed_paths: Specific file paths to allow (forwarded to DuckDB's
+            ``allowed_paths`` setting on new connections).
+        deny_patterns: Glob patterns to block, checked against every path
+            component (default: ``DEFAULT_DENY_PATTERNS``).
+        max_file_bytes: Maximum file size for read operations (default: 50 MB).
+
+    Returns:
+        A SecurityPolicy with PathGuard and FileSizeGuard bound to I/O ops.
+    """
+    if deny_patterns is None:
+        deny_patterns = list(DEFAULT_DENY_PATTERNS)
+    path_guard = PathGuard(allowed_dirs, deny_patterns=deny_patterns)
+    policy = SecurityPolicy()
+    policy.bind(path_guard, ops=_IO_OPS, args=["path"])
+    policy.bind(path_guard, ops=["connect"], args=["database"])
+    policy.bind(
+        FileSizeGuard(max_bytes=max_file_bytes),
+        ops=_IO_OPS,
+        args=["path"],
+    )
+    return policy
+
+
+def _default_duckdb_policy() -> SecurityPolicy:
+    """Build the default security policy for DuckDB operations."""
+    return duckdb_policy()
+
+
+duckdb_ops = OperationSet(default_policy=_default_duckdb_policy())
 
 
 # =============================================================================
@@ -48,9 +183,15 @@ duckdb_ops = OperationSet()
 
 
 @duckdb_ops.op
-def connect(database: str = ":memory:", read_only: bool = False) -> DuckDBPyConnection:
+def connect(
+    database: str = ":memory:",
+    read_only: bool = False,
+) -> DuckDBPyConnection:
     """
     Create a DuckDB connection.
+
+    The connection is hardened: external filesystem/network access is disabled
+    by default and the configuration is locked.
 
     Args:
         database: Path to database file, or ":memory:" for in-memory (default).
@@ -59,7 +200,7 @@ def connect(database: str = ":memory:", read_only: bool = False) -> DuckDBPyConn
     Returns:
         A DuckDB connection object.
     """
-    return duckdb.connect(database=database, read_only=read_only)
+    return _secure_connect(database=database, read_only=read_only)
 
 
 # =============================================================================
@@ -73,24 +214,17 @@ def query(
     conn: Ref[DuckDBPyConnection] | None = None,
 ) -> DuckDBPyRelation:
     """
-    Execute a SQL query and return results as a relation.
-
-    DuckDB can query files directly:
-        - CSV: SELECT * FROM 'file.csv'
-        - Parquet: SELECT * FROM 'file.parquet'
-        - JSON: SELECT * FROM read_json_auto('file.json')
-        - Multiple files: SELECT * FROM 'data/*.parquet'
+    Execute a read-only SQL query and return results as a relation.
 
     Args:
-        sql: SQL query string.
-        conn: Optional connection. Uses a default connection if not provided.
+        sql: SQL query string (SELECT / WITH / EXPLAIN only).
+        conn: Optional connection. Uses a locked-down default if not provided.
 
     Returns:
         A DuckDB relation (lazy result set).
     """
-    if conn is None:
-        return duckdb.query(sql)
-    return conn.query(sql)
+    target = conn if conn is not None else _get_default_conn()
+    return target.query(sql)
 
 
 @duckdb_ops.op
@@ -99,9 +233,11 @@ def execute(
     conn: Ref[DuckDBPyConnection],
 ) -> None:
     """
-    Execute a SQL statement (CREATE, INSERT, UPDATE, DELETE, etc.).
+    Execute a SQL statement (CREATE TABLE, etc.).
 
-    Use this for statements that don't return results.
+    Use this for statements that don't return results.  Dangerous
+    statements (COPY, INSTALL, ATTACH, …) are blocked by DuckDB's
+    native ``enable_external_access`` and ``lock_configuration`` settings.
 
     Args:
         sql: SQL statement to execute.
@@ -138,9 +274,8 @@ def read_csv(
     conn: Ref[DuckDBPyConnection] | None = None,
 ) -> DuckDBPyRelation:
     """Read a CSV file into a relation."""
-    if conn is None:
-        return duckdb.read_csv(path)
-    return conn.read_csv(path)
+    target = conn if conn is not None else _get_default_conn()
+    return target.read_csv(path)
 
 
 @duckdb_ops.op
@@ -153,9 +288,8 @@ def read_parquet(
 
     Supports glob patterns like 'data/*.parquet'.
     """
-    if conn is None:
-        return duckdb.read_parquet(path)
-    return conn.read_parquet(path)
+    target = conn if conn is not None else _get_default_conn()
+    return target.read_parquet(path)
 
 
 @duckdb_ops.op
@@ -164,9 +298,8 @@ def read_json(
     conn: Ref[DuckDBPyConnection] | None = None,
 ) -> DuckDBPyRelation:
     """Read a JSON file into a relation."""
-    if conn is None:
-        return duckdb.read_json(path)
-    return conn.read_json(path)
+    target = conn if conn is not None else _get_default_conn()
+    return target.read_json(path)
 
 
 # =============================================================================
@@ -348,8 +481,9 @@ def create_table_from_relation(
     relation: Ref[DuckDBPyRelation],
 ) -> None:
     """Create a table from a relation."""
+    quoted = _quote_identifier(table_name)
     conn.execute(
-        f"CREATE TABLE {table_name} AS SELECT * FROM relation",
+        f"CREATE TABLE {quoted} AS SELECT * FROM relation",
         {"relation": relation},
     )
 
@@ -361,7 +495,8 @@ def create_table_from_df(
     df: Any,  # noqa: ARG001 - DuckDB resolves 'df' by name from locals
 ) -> None:
     """Create a table from a pandas or polars DataFrame."""
-    conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM df")
+    quoted = _quote_identifier(table_name)
+    conn.execute(f"CREATE TABLE {quoted} AS SELECT * FROM df")
 
 
 @duckdb_ops.op
@@ -371,8 +506,9 @@ def insert_into(
     relation: Ref[DuckDBPyRelation],
 ) -> None:
     """Insert rows from a relation into a table."""
+    quoted = _quote_identifier(table_name)
     conn.execute(
-        f"INSERT INTO {table_name} SELECT * FROM relation",
+        f"INSERT INTO {quoted} SELECT * FROM relation",
         {"relation": relation},
     )
 
@@ -393,7 +529,8 @@ def describe_table(
     table_name: str,
 ) -> DuckDBPyRelation:
     """Get schema information for a table."""
-    return conn.query(f"DESCRIBE {table_name}")
+    quoted = _quote_identifier(table_name)
+    return conn.query(f"DESCRIBE {quoted}")
 
 
 @duckdb_ops.op
@@ -403,8 +540,9 @@ def drop_table(
     if_exists: bool = True,
 ) -> None:
     """Drop a table from the database."""
+    quoted = _quote_identifier(table_name)
     exists_clause = "IF EXISTS " if if_exists else ""
-    conn.execute(f"DROP TABLE {exists_clause}{table_name}")
+    conn.execute(f"DROP TABLE {exists_clause}{quoted}")
 
 
 # =============================================================================
@@ -444,4 +582,4 @@ def _inspect_connection(conn: DuckDBPyConnection) -> dict[str, Any]:
 # Public API
 # =============================================================================
 
-__all__ = ["duckdb_ops"]
+__all__ = ["duckdb_ops", "duckdb_policy"]

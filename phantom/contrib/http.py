@@ -48,14 +48,44 @@ _HTTP_URL_OPS = ["http_get", "http_post", "http_put", "http_delete"]
 _HTTP_CLIENT_OPS = ["client_get", "client_post"]
 
 
-def _default_http_policy() -> SecurityPolicy:
-    """Build the default security policy for HTTP operations."""
-    guard = URLGuard(block_private=True, resolve_dns=True)
+def http_policy(
+    *,
+    allowed_hosts: list[str] | None = None,
+    blocked_hosts: list[str] | None = None,
+    allowed_schemes: list[str] | None = None,
+    block_private: bool = True,
+    resolve_dns: bool = True,
+) -> SecurityPolicy:
+    """Create a security policy for HTTP operations.
+
+    Args:
+        allowed_hosts: If set, only these hosts are permitted.
+        blocked_hosts: Hosts that are always blocked.
+        allowed_schemes: Permitted URL schemes (default: ``["https", "http"]``).
+        block_private: Block private/loopback IPs (default: ``True``).
+        resolve_dns: Resolve hostnames via DNS and check for private IPs
+            (default: ``True``).
+
+    Returns:
+        A SecurityPolicy with URLGuard bound to all HTTP operations.
+    """
+    guard = URLGuard(
+        allowed_hosts=allowed_hosts,
+        blocked_hosts=blocked_hosts,
+        allowed_schemes=allowed_schemes,
+        block_private=block_private,
+        resolve_dns=resolve_dns,
+    )
     policy = SecurityPolicy()
     policy.bind(guard, ops=_HTTP_URL_OPS, args=["url"])
     policy.bind(guard, ops=["create_client"], args=["base_url"])
     policy.bind(guard, ops=_HTTP_CLIENT_OPS, args=["path"])
     return policy
+
+
+def _default_http_policy() -> SecurityPolicy:
+    """Build the default security policy for HTTP operations."""
+    return http_policy()
 
 
 http_ops = OperationSet(default_policy=_default_http_policy())
@@ -67,9 +97,13 @@ http_ops = OperationSet(default_policy=_default_http_policy())
 
 
 def _reject_absolute_url(path: str) -> None:
-    """Reject absolute URLs in client operation paths."""
+    """Reject absolute or protocol-relative URLs in client operation paths.
+
+    Catches ``https://evil.com`` (scheme + netloc) **and**
+    ``//evil.com/path`` (protocol-relative, no scheme but has netloc).
+    """
     parsed = urlparse(path)
-    if parsed.scheme and parsed.netloc:
+    if parsed.scheme or parsed.netloc:
         raise ValueError(
             f"Absolute URLs are not allowed in client operations "
             f"(got '{path}'). Use http_get/http_post for absolute "
@@ -319,16 +353,38 @@ def client_post(
 # =============================================================================
 
 
+_SENSITIVE_HEADERS: frozenset[str] = frozenset({
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-auth-token",
+})
+
+
+def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Return a copy of *headers* with sensitive values replaced."""
+    return {
+        k: ("**REDACTED**" if k.lower() in _SENSITIVE_HEADERS else v)
+        for k, v in headers.items()
+    }
+
+
 @http_ops.inspector(Client)
 def _inspect_client(client: Client) -> dict[str, Any]:
-    """HTTP client inspector for LLM context."""
+    """HTTP client inspector for LLM context.
+
+    Sensitive headers (Authorization, cookies, API keys) are redacted
+    so they never enter the LLM context.
+    """
     timeout = client.timeout
     timeout_seconds = timeout.read if timeout is not None else None
 
     return {
         "type": "httpx.Client",
         "base_url": str(client.base_url),
-        "headers": dict(client.headers),
+        "headers": _redact_headers(dict(client.headers)),
         "timeout": timeout_seconds,
     }
 
@@ -337,4 +393,4 @@ def _inspect_client(client: Client) -> dict[str, Any]:
 # Public API
 # =============================================================================
 
-__all__ = ["http_ops"]
+__all__ = ["http_ops", "http_policy"]

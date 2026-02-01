@@ -10,10 +10,6 @@ Usage:
     policy.bind(PathGuard(allowed_dirs=["/data"]), ops=["read_text"], args=["path"])
 
     session = Session(policy=policy)
-
-    # Or use convenience factories:
-    from phantom import file_policy, http_policy
-    session = Session(policy=file_policy(allowed_dirs=["/data"]))
 """
 
 from __future__ import annotations
@@ -21,12 +17,28 @@ from __future__ import annotations
 import fnmatch
 import ipaddress
 import os
-import re
 import socket
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+DEFAULT_DENY_PATTERNS: list[str] = [
+    "*.env",
+    ".git",
+    ".ssh",
+    "*.pem",
+    "*.key",
+    "id_rsa*",
+    "id_ed25519*",
+    "id_ecdsa*",
+    ".aws",
+    "credentials*",
+    ".netrc",
+    ".npmrc",
+    "*.secret",
+    "*.secrets",
+]
 
 
 class SecurityError(ValueError):
@@ -174,8 +186,12 @@ class URLGuard(Guard):
         block_private: bool = True,
         resolve_dns: bool = True,
     ) -> None:
-        self._allowed_hosts = set(allowed_hosts) if allowed_hosts else None
-        self._blocked_hosts = set(blocked_hosts) if blocked_hosts else set()
+        self._allowed_hosts = (
+            {h.lower() for h in allowed_hosts} if allowed_hosts else None
+        )
+        self._blocked_hosts = (
+            {h.lower() for h in blocked_hosts} if blocked_hosts else set()
+        )
         self._allowed_schemes = set(allowed_schemes or ["https", "http"])
         self._block_private = block_private
         self._resolve_dns = resolve_dns
@@ -203,7 +219,7 @@ class URLGuard(Guard):
                 guard_name="URLGuard",
             )
 
-        hostname = parsed.hostname or ""
+        hostname = (parsed.hostname or "").lower()
 
         if hostname in self._blocked_hosts:
             raise SecurityError(
@@ -289,44 +305,6 @@ class URLGuard(Guard):
                     arg_name=arg_name,
                     guard_name="URLGuard",
                 )
-
-
-class RegexGuard(Guard):
-    """Prevent ReDoS by limiting regex complexity.
-
-    Rejects patterns that exceed *max_length* or contain nested quantifiers
-    that are known to cause catastrophic backtracking.
-
-    Args:
-        max_length: Maximum allowed pattern length.
-    """
-
-    _NESTED_QUANTIFIER = re.compile(
-        r"\([^)]*[+*][^)]*\)[+*{]"
-    )
-
-    def __init__(self, max_length: int = 500) -> None:
-        self._max_length = max_length
-
-    def check(self, value: Any, *, op_name: str, arg_name: str) -> None:
-        pattern = str(value)
-
-        if len(pattern) > self._max_length:
-            raise SecurityError(
-                f"Regex pattern length ({len(pattern)}) exceeds limit "
-                f"({self._max_length})",
-                op_name=op_name,
-                arg_name=arg_name,
-                guard_name="RegexGuard",
-            )
-
-        if self._NESTED_QUANTIFIER.search(pattern):
-            raise SecurityError(
-                "Regex contains nested quantifiers (potential ReDoS)",
-                op_name=op_name,
-                arg_name=arg_name,
-                guard_name="RegexGuard",
-            )
 
 
 class FileSizeGuard(Guard):
@@ -430,94 +408,12 @@ class SecurityPolicy:
         return f"SecurityPolicy(guards={guards})"
 
 
-# =============================================================================
-# Convenience factories
-# =============================================================================
-
-_FILE_PATH_OPS = ["read_text", "read_bytes", "write_text", "list_dir", "file_info"]
-_FILE_REGEX_OPS = ["search_text", "replace_text"]
-_FILE_READ_OPS = ["read_text", "read_bytes"]
-_HTTP_URL_OPS = ["http_get", "http_post", "http_put", "http_delete"]
-_HTTP_CLIENT_OPS = ["client_get", "client_post"]
-
-
-def file_policy(
-    allowed_dirs: list[str | Path] | None = None,
-    *,
-    deny_patterns: list[str] | None = None,
-    max_file_bytes: int = 50_000_000,
-    max_regex_length: int = 500,
-) -> SecurityPolicy:
-    """Create a security policy for file operations.
-
-    Args:
-        allowed_dirs: Directories the file operations may access.  When
-            ``None``, no directory restriction is applied (deny patterns
-            and other guards still run).
-        deny_patterns: Glob patterns to block, checked against every path
-            component (e.g. ``["*.env", ".git"]``).
-        max_file_bytes: Maximum file size for read operations (default: 50 MB).
-        max_regex_length: Maximum regex pattern length (default: 500).
-    """
-    policy = SecurityPolicy()
-    policy.bind(
-        PathGuard(allowed_dirs, deny_patterns=deny_patterns),
-        ops=_FILE_PATH_OPS,
-        args=["path"],
-    )
-    policy.bind(
-        RegexGuard(max_length=max_regex_length),
-        ops=_FILE_REGEX_OPS,
-        args=["pattern"],
-    )
-    policy.bind(
-        FileSizeGuard(max_bytes=max_file_bytes),
-        ops=_FILE_READ_OPS,
-        args=["path"],
-    )
-    return policy
-
-
-def http_policy(
-    *,
-    allowed_hosts: list[str] | None = None,
-    blocked_hosts: list[str] | None = None,
-    allowed_schemes: list[str] | None = None,
-    block_private: bool = True,
-    resolve_dns: bool = True,
-) -> SecurityPolicy:
-    """Create a security policy for HTTP operations.
-
-    Args:
-        allowed_hosts: If set, only these hosts are permitted.
-        blocked_hosts: Hosts that are always blocked.
-        allowed_schemes: Permitted URL schemes (default: ``["https", "http"]``).
-        block_private: Block private/loopback IPs (default: ``True``).
-        resolve_dns: Resolve hostnames via DNS and check for private IPs
-            (default: ``True``).
-    """
-    guard = URLGuard(
-        allowed_hosts=allowed_hosts,
-        blocked_hosts=blocked_hosts,
-        allowed_schemes=allowed_schemes,
-        block_private=block_private,
-        resolve_dns=resolve_dns,
-    )
-    policy = SecurityPolicy()
-    policy.bind(guard, ops=_HTTP_URL_OPS, args=["url"])
-    policy.bind(guard, ops=["create_client"], args=["base_url"])
-    policy.bind(guard, ops=_HTTP_CLIENT_OPS, args=["path"])
-    return policy
-
-
 __all__ = [
+    "DEFAULT_DENY_PATTERNS",
     "SecurityError",
     "Guard",
     "PathGuard",
     "URLGuard",
-    "RegexGuard",
     "FileSizeGuard",
     "SecurityPolicy",
-    "file_policy",
-    "http_policy",
 ]

@@ -15,8 +15,8 @@ Usage:
 
     # Now use polars operations
     data = session.ref("read_csv", path="data.csv")
-    filtered = session.ref("filter_rows", df=data, condition="col('value') > 100")
-    result = session.resolve(filtered)
+    selected = session.ref("select_columns", df=data, columns=["name", "value"])
+    result = session.resolve(selected)
 """
 
 # mypy: ignore-errors
@@ -26,9 +26,16 @@ Usage:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from phantom import OperationSet, Ref
+from phantom._security import (
+    DEFAULT_DENY_PATTERNS,
+    FileSizeGuard,
+    PathGuard,
+    SecurityPolicy,
+)
 
 from ._base import require_dependency
 
@@ -37,7 +44,50 @@ DataFrame = pl.DataFrame
 LazyFrame = pl.LazyFrame
 Series = pl.Series
 
-polars_ops = OperationSet()
+_IO_OPS = ["read_csv", "read_parquet", "read_json", "read_ndjson"]
+
+
+def polars_policy(
+    allowed_dirs: list[str | Path] | None = None,
+    *,
+    deny_patterns: list[str] | None = None,
+    max_file_bytes: int = 50_000_000,
+) -> SecurityPolicy:
+    """Create a security policy for polars file operations.
+
+    Args:
+        allowed_dirs: Directories the file operations may access.  When
+            ``None``, no directory restriction is applied (deny patterns
+            and other guards still run).
+        deny_patterns: Glob patterns to block, checked against every path
+            component (default: ``["*.env", ".git"]``).
+        max_file_bytes: Maximum file size for read operations (default: 50 MB).
+
+    Returns:
+        A SecurityPolicy with PathGuard and FileSizeGuard bound to I/O ops.
+    """
+    if deny_patterns is None:
+        deny_patterns = list(DEFAULT_DENY_PATTERNS)
+    policy = SecurityPolicy()
+    policy.bind(
+        PathGuard(allowed_dirs, deny_patterns=deny_patterns),
+        ops=_IO_OPS,
+        args=["path"],
+    )
+    policy.bind(
+        FileSizeGuard(max_bytes=max_file_bytes),
+        ops=_IO_OPS,
+        args=["path"],
+    )
+    return policy
+
+
+def _default_polars_policy() -> SecurityPolicy:
+    """Build the default security policy for polars operations."""
+    return polars_policy()
+
+
+polars_ops = OperationSet(default_policy=_default_polars_policy())
 
 
 # =============================================================================
@@ -78,19 +128,6 @@ def read_ndjson(path: str) -> DataFrame:
 def select_columns(df: Ref[DataFrame], columns: list[str]) -> DataFrame:
     """Select specific columns from a DataFrame."""
     return df.select(columns)
-
-
-@polars_ops.op
-def filter_rows(df: Ref[DataFrame], condition: str) -> DataFrame:
-    """
-    Filter rows using a Polars expression string.
-
-    The condition should be a valid Polars expression that evaluates to a boolean.
-    Use pl.col() syntax,
-    e.g., "pl.col('age') > 30" or "pl.col('name').str.contains('John')".
-    """
-    expr = eval(condition, {"pl": pl, "col": pl.col})
-    return df.filter(expr)
 
 
 @polars_ops.op
@@ -151,18 +188,6 @@ def rename_columns(df: Ref[DataFrame], mapping: dict[str, str]) -> DataFrame:
 
 
 @polars_ops.op
-def with_column(df: Ref[DataFrame], column: str, expression: str) -> DataFrame:
-    """
-    Add or update a column using a Polars expression string.
-
-    The expression should be a valid Polars expression, e.g.,
-    "pl.col('quantity') * pl.col('price')" or "pl.col('name').str.to_uppercase()".
-    """
-    expr = eval(expression, {"pl": pl, "col": pl.col})
-    return df.with_columns(expr.alias(column))
-
-
-@polars_ops.op
 def fill_null(
     df: Ref[DataFrame],
     value: Any = None,
@@ -216,15 +241,25 @@ def cast_column(df: Ref[DataFrame], column: str, dtype: str) -> DataFrame:
         "date": pl.Date,
         "datetime": pl.Datetime,
     }
-    pl_dtype = dtype_map.get(dtype.lower(), getattr(pl, dtype, None))
+    pl_dtype = dtype_map.get(dtype.lower())
     if pl_dtype is None:
-        raise ValueError(f"Unknown dtype: {dtype}")
+        raise ValueError(
+            f"Unknown dtype: '{dtype}'. "
+            f"Supported: {sorted(dtype_map.keys())}"
+        )
     return df.with_columns(pl.col(column).cast(pl_dtype))
 
 
 # =============================================================================
 # Aggregation
 # =============================================================================
+
+
+_ALLOWED_AGGS: frozenset[str] = frozenset({
+    "sum", "mean", "median", "min", "max",
+    "count", "len", "first", "last",
+    "std", "var", "n_unique",
+})
 
 
 @polars_ops.op
@@ -236,11 +271,17 @@ def groupby_agg(
     """
     Group by columns and aggregate.
 
-    aggregations: {column: 'sum'|'mean'|'count'|'min'|'max'|'first'|'last'}.
+    aggregations: {column: 'sum'|'mean'|'count'|'min'|'max'|'first'|'last'|
+    'std'|'var'|'median'|'n_unique'|'len'}.
     """
     by_cols = [by] if isinstance(by, str) else by
     agg_exprs = []
     for col_name, agg_func in aggregations.items():
+        if agg_func not in _ALLOWED_AGGS:
+            raise ValueError(
+                f"Unsupported aggregation '{agg_func}'. "
+                f"Allowed: {sorted(_ALLOWED_AGGS)}"
+            )
         expr = getattr(pl.col(col_name), agg_func)()
         agg_exprs.append(expr)
     return df.group_by(by_cols).agg(agg_exprs)
@@ -328,4 +369,4 @@ def _inspect_lazyframe(lf: LazyFrame) -> dict[str, Any]:
 # Public API
 # =============================================================================
 
-__all__ = ["polars_ops"]
+__all__ = ["polars_ops", "polars_policy"]
