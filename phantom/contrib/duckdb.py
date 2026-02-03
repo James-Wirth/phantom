@@ -43,14 +43,9 @@ from pathlib import Path
 from typing import Any
 
 from phantom import OperationSet, Ref
-from phantom._security import (
-    DEFAULT_DENY_PATTERNS,
-    FileSizeGuard,
-    PathGuard,
-    SecurityPolicy,
-)
+from phantom._security import SecurityPolicy
 
-from ._base import require_dependency
+from ._base import io_policy, require_dependency
 
 duckdb = require_dependency("duckdb", "duckdb", "duckdb")
 DuckDBPyConnection = duckdb.DuckDBPyConnection
@@ -155,18 +150,15 @@ def duckdb_policy(
     Returns:
         A SecurityPolicy with PathGuard and FileSizeGuard bound to I/O ops.
     """
-    if deny_patterns is None:
-        deny_patterns = list(DEFAULT_DENY_PATTERNS)
-    path_guard = PathGuard(allowed_dirs, deny_patterns=deny_patterns)
-    policy = SecurityPolicy()
-    policy.bind(path_guard, ops=_IO_OPS, args=["path"])
-    policy.bind(path_guard, ops=["connect"], args=["database"])
-    policy.bind(
-        FileSizeGuard(max_bytes=max_file_bytes),
-        ops=_IO_OPS,
-        args=["path"],
+    return io_policy(
+        _IO_OPS,
+        allowed_dirs=allowed_dirs,
+        deny_patterns=deny_patterns,
+        max_file_bytes=max_file_bytes,
+        extra_path_bindings=[
+            (["connect"], ["database"]),
+        ],
     )
-    return policy
 
 
 def _default_duckdb_policy() -> SecurityPolicy:

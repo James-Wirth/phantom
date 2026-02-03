@@ -30,14 +30,9 @@ from pathlib import Path
 from typing import Any
 
 from phantom import OperationSet, Ref
-from phantom._security import (
-    DEFAULT_DENY_PATTERNS,
-    FileSizeGuard,
-    PathGuard,
-    SecurityPolicy,
-)
+from phantom._security import SecurityPolicy
 
-from ._base import require_dependency
+from ._base import io_policy, require_dependency
 
 pl = require_dependency("polars", "polars", "polars")
 DataFrame = pl.DataFrame
@@ -66,20 +61,12 @@ def polars_policy(
     Returns:
         A SecurityPolicy with PathGuard and FileSizeGuard bound to I/O ops.
     """
-    if deny_patterns is None:
-        deny_patterns = list(DEFAULT_DENY_PATTERNS)
-    policy = SecurityPolicy()
-    policy.bind(
-        PathGuard(allowed_dirs, deny_patterns=deny_patterns),
-        ops=_IO_OPS,
-        args=["path"],
+    return io_policy(
+        _IO_OPS,
+        allowed_dirs=allowed_dirs,
+        deny_patterns=deny_patterns,
+        max_file_bytes=max_file_bytes,
     )
-    policy.bind(
-        FileSizeGuard(max_bytes=max_file_bytes),
-        ops=_IO_OPS,
-        args=["path"],
-    )
-    return policy
 
 
 def _default_polars_policy() -> SecurityPolicy:
