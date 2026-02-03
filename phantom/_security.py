@@ -1,10 +1,10 @@
 """Security policy infrastructure for Phantom operations.
 
 Provides composable guards that validate operation arguments before execution,
-preventing path traversal, SSRF, ReDoS, and resource exhaustion attacks.
+preventing path traversal, ReDoS, and resource exhaustion attacks.
 
 Usage:
-    from phantom import Session, SecurityPolicy, PathGuard, URLGuard
+    from phantom import Session, SecurityPolicy, PathGuard
 
     policy = SecurityPolicy()
     policy.bind(PathGuard(allowed_dirs=["/data"]), ops=["read_text"], args=["path"])
@@ -15,13 +15,10 @@ Usage:
 from __future__ import annotations
 
 import fnmatch
-import ipaddress
 import os
-import socket
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 DEFAULT_DENY_PATTERNS: list[str] = [
     "*.env",
@@ -155,158 +152,6 @@ class PathGuard(Guard):
         )
 
 
-class URLGuard(Guard):
-    """Prevent SSRF by restricting URLs.
-
-    Validates URL scheme, hostname, and optionally resolves the host to
-    check for private/loopback IP addresses.
-
-    Relative paths (no scheme and no host, e.g. ``"/users"``) are allowed
-    through without validation — they are used by client-based operations
-    where the base URL was already validated at client creation time.
-
-    Args:
-        allowed_hosts: If set, only these hosts are permitted.
-        blocked_hosts: Hosts that are always blocked.
-        allowed_schemes: Permitted URL schemes (default: ``["https", "http"]``).
-        block_private: Block private/loopback IPs (default: ``True``).
-        resolve_dns: When ``True`` (the default), resolve hostnames via DNS
-            and check the resolved IPs against private/loopback ranges.
-            This closes the DNS-rebinding SSRF bypass where a hostname
-            resolves to an internal IP.
-    """
-
-    _METADATA_IPS = frozenset({"169.254.169.254", "fd00:ec2::254"})
-
-    def __init__(
-        self,
-        allowed_hosts: list[str] | None = None,
-        blocked_hosts: list[str] | None = None,
-        allowed_schemes: list[str] | None = None,
-        block_private: bool = True,
-        resolve_dns: bool = True,
-    ) -> None:
-        self._allowed_hosts = (
-            {h.lower() for h in allowed_hosts} if allowed_hosts else None
-        )
-        self._blocked_hosts = (
-            {h.lower() for h in blocked_hosts} if blocked_hosts else set()
-        )
-        self._allowed_schemes = set(allowed_schemes or ["https", "http"])
-        self._block_private = block_private
-        self._resolve_dns = resolve_dns
-
-    def check(self, value: Any, *, op_name: str, arg_name: str) -> None:
-        try:
-            parsed = urlparse(str(value))
-        except Exception as exc:
-            raise SecurityError(
-                f"Invalid URL: {exc}",
-                op_name=op_name,
-                arg_name=arg_name,
-                guard_name="URLGuard",
-            ) from exc
-
-        if not parsed.scheme and not parsed.netloc:
-            return
-
-        if parsed.scheme not in self._allowed_schemes:
-            raise SecurityError(
-                f"URL scheme '{parsed.scheme}' is not allowed "
-                f"(allowed: {sorted(self._allowed_schemes)})",
-                op_name=op_name,
-                arg_name=arg_name,
-                guard_name="URLGuard",
-            )
-
-        hostname = (parsed.hostname or "").lower()
-
-        if hostname in self._blocked_hosts:
-            raise SecurityError(
-                f"Host '{hostname}' is blocked",
-                op_name=op_name,
-                arg_name=arg_name,
-                guard_name="URLGuard",
-            )
-
-        if self._allowed_hosts is not None and hostname not in self._allowed_hosts:
-            raise SecurityError(
-                f"Host '{hostname}' is not in the allowed hosts list",
-                op_name=op_name,
-                arg_name=arg_name,
-                guard_name="URLGuard",
-            )
-
-        if self._block_private:
-            self._check_private(
-                hostname, op_name=op_name, arg_name=arg_name
-            )
-
-    def _check_private(
-        self, hostname: str, *, op_name: str, arg_name: str
-    ) -> None:
-        """Block private, loopback, and metadata IPs."""
-        if hostname in self._METADATA_IPS:
-            raise SecurityError(
-                f"Host '{hostname}' is a cloud metadata endpoint",
-                op_name=op_name,
-                arg_name=arg_name,
-                guard_name="URLGuard",
-            )
-
-        try:
-            addr = ipaddress.ip_address(hostname)
-        except ValueError:
-            if self._resolve_dns:
-                self._check_dns(
-                    hostname, op_name=op_name, arg_name=arg_name
-                )
-            return
-
-        if addr.is_loopback or addr.is_private or addr.is_reserved:
-            raise SecurityError(
-                f"Host '{hostname}' resolves to a private/loopback "
-                "address",
-                op_name=op_name,
-                arg_name=arg_name,
-                guard_name="URLGuard",
-            )
-
-    def _check_dns(
-        self, hostname: str, *, op_name: str, arg_name: str
-    ) -> None:
-        """Resolve *hostname* via DNS and block private/metadata IPs."""
-        try:
-            infos = socket.getaddrinfo(
-                hostname, None, proto=socket.IPPROTO_TCP
-            )
-        except socket.gaierror:
-            return
-
-        for info in infos:
-            resolved_ip = info[4][0]
-            if resolved_ip in self._METADATA_IPS:
-                raise SecurityError(
-                    f"Host '{hostname}' resolves to a cloud metadata "
-                    f"endpoint ({resolved_ip})",
-                    op_name=op_name,
-                    arg_name=arg_name,
-                    guard_name="URLGuard",
-                )
-            try:
-                addr = ipaddress.ip_address(resolved_ip)
-            except ValueError:
-                continue
-            if addr.is_loopback or addr.is_private or addr.is_reserved:
-                raise SecurityError(
-                    f"Host '{hostname}' resolves to a private/loopback "
-                    f"address ({resolved_ip})",
-                    op_name=op_name,
-                    arg_name=arg_name,
-                    guard_name="URLGuard",
-                )
-
-
 class FileSizeGuard(Guard):
     """Prevent reading oversized files.
 
@@ -413,7 +258,6 @@ __all__ = [
     "SecurityError",
     "Guard",
     "PathGuard",
-    "URLGuard",
     "FileSizeGuard",
     "SecurityPolicy",
 ]

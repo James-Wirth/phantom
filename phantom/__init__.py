@@ -62,7 +62,6 @@ from ._security import (
     PathGuard,
     SecurityError,
     SecurityPolicy,
-    URLGuard,
 )
 from ._session import Session
 
@@ -92,7 +91,6 @@ __all__ = [
     "SecurityPolicy",
     "Guard",
     "PathGuard",
-    "URLGuard",
     "FileSizeGuard",
     # Errors
     "ResolutionError",

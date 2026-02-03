@@ -8,8 +8,6 @@ Available modules:
     - phantom.contrib.pandas: DataFrame operations (requires pandas)
     - phantom.contrib.polars: DataFrame operations (requires polars)
     - phantom.contrib.duckdb: SQL analytics (requires duckdb)
-    - phantom.contrib.http: HTTP / API orchestration (requires httpx)
-
 Example:
     from phantom import Session
     from phantom.contrib.pandas import pandas_ops
@@ -40,7 +38,6 @@ def available_modules() -> dict[str, bool]:
         ("pandas", "pandas"),
         ("polars", "polars"),
         ("duckdb", "duckdb"),
-        ("http", "httpx"),
     ]:
         try:
             __import__(pkg)
