@@ -30,6 +30,14 @@ def serialize_graph(root: Ref[Any]) -> dict[str, Any]:
             if isinstance(value, Ref):
                 serialized_args[key] = value.id
                 collect(value)
+            elif isinstance(value, dict):
+                serialized_args[key] = {
+                    dk: dv.id if isinstance(dv, Ref) else dv
+                    for dk, dv in value.items()
+                }
+                for dv in value.values():
+                    if isinstance(dv, Ref):
+                        collect(dv)
             else:
                 serialized_args[key] = value
 
@@ -85,6 +93,11 @@ def deserialize_graph(data: dict[str, Any]) -> Ref[Any]:
         for key, value in ref_data["args"].items():
             if isinstance(value, str) and value.startswith("@"):
                 resolved_args[key] = build(value)
+            elif isinstance(value, dict):
+                resolved_args[key] = {
+                    dk: build(dv) if isinstance(dv, str) and dv.startswith("@") else dv
+                    for dk, dv in value.items()
+                }
             else:
                 resolved_args[key] = value
 

@@ -11,7 +11,7 @@
   </p>
 </p>
 
-Phantom is a Python framework for building LLM-assisted workflows. The LLMs don't need to see your data. They can reason with opaque semantic references (`@a3f2`), from which Phantom constructs a lazy computation graph using your registered operations. The graph execution is deterministic and runs locally on your machine.
+Phantom is a Python framework for building LLM-assisted data workflows. The LLMs don't need to see your data. They reason with opaque semantic references (`@a3f2`), from which Phantom constructs a lazy computation graph backed by DuckDB. Graph execution is deterministic and runs locally on your machine.
 
 ## Quick Start
 
@@ -21,40 +21,33 @@ pip install git+https://github.com/James-Wirth/phantom.git
 
 ```python
 import phantom
-import pandas as pd
 
-session = phantom.Session()
-
-@session.op
-def load(name: str) -> pd.DataFrame:
-    """Load a dataset. Available: neo_survey, missions, launches."""
-    return pd.read_parquet(DATA_DIR / f"{name}.parquet")
-
-@session.op
-def query(df: phantom.Ref[pd.DataFrame], expr: str) -> pd.DataFrame:
-    """Filter rows with a pandas query expression."""
-    return df.query(expr)
+session = phantom.Session(allowed_dirs=["./data"])
 
 chat = phantom.Chat(
     session,
-    provider=phantom.AnthropicProvider(api_key="sk-ant-..."),
+    provider="anthropic",
     model="claude-sonnet-4-20250514",
+    system="You are an astrophysicist. Data files are in ./data/.",
 )
-response = chat.ask("Which potentially hazardous near-Earth asteroids have an orbital period under 200 days?")
+response = chat.ask(
+    "Which potentially hazardous near-Earth asteroids "
+    "have an orbital period under 200 days?"
+)
 ```
 
 ## How It Works
 
-Phantom creates a **symbolic layer** between the LLM and your data. Each operation returns an opaque reference like `@a3f2` instead of real data. 
+Phantom creates a **symbolic layer** between the LLM and your data. Each operation returns an opaque reference like `@a3f2` instead of real data. SQL is the primary query language, powered by DuckDB.
 
 | Step | LLM Tool Call | Response |
 |:----:|-----------|----------|
-| 1 | `load(name="neo_survey")` | `@a3f2` |
-| 2 | `peek(ref="@a3f2")` | `shape: [32000, 9], columns: [name, est_diameter_km, hazardous, ...]` |
-| 3 | `query(df="@a3f2", expr="hazardous == True & orbital_period < 200")` | `@b4c3` |
-| 4 | `peek(ref="@b4c3")` | `shape: [47, 9], sample: [{name: "2015 FP345", ...}]` |
+| 1 | `read_csv(path="neo_survey.csv")` | `@a3f2` |
+| 2 | `peek(ref="@a3f2")` | `columns: {name: VARCHAR, hazardous: BOOLEAN, orbital_period: DOUBLE, ...}, sample: [...]` |
+| 3 | `query(sql="SELECT * FROM neo WHERE hazardous AND orbital_period < 200", refs={"neo": "@a3f2"})` | `@b4c3` |
+| 4 | `peek(ref="@b4c3")` | `columns: {name: VARCHAR, ...}, sample: [{name: "2015 FP345", ...}]` |
 
-The LLM orchestrated a load, filter, and inspection across 32,000 asteroid records. Since refs form a DAG, shared subgraphs are resolved once and cached (i.e. no redundant computation).
+The LLM loaded a CSV, wrote SQL to filter hazardous asteroids with short orbital periods, and inspected the results. Since refs form a DAG, shared subgraphs are resolved once and cached.
 
 ## LLM Providers
 
@@ -106,7 +99,10 @@ chat = phantom.Chat(
 `phantom.Chat` is the high-level interface for multi-turn LLM conversations. It handles the tool-call loop, message history, and ref tracking:
 
 ```python
-r1 = chat.ask("Which exoplanets in the habitable zone have a mass under 5 Earth masses?")
+r1 = chat.ask(
+    "Which exoplanets in the habitable zone "
+    "have a mass under 5 Earth masses?"
+)
 print(r1.text)
 print(r1.tool_calls_made)
 print(r1.usage.total_tokens)
@@ -114,43 +110,28 @@ print(r1.usage.total_tokens)
 r2 = chat.ask("Of those, which orbit K-type stars?")
 ```
 
-## Contrib Modules
-
-Pre-built operation sets for common data libraries:
-
-```bash
-pip install "phantom[pandas]"
-pip install "phantom[polars]"
-pip install "phantom[duckdb]"
-pip install "phantom[all]"
-```
-
-```python
-from phantom.contrib.pandas import pandas_ops
-
-session = phantom.Session()
-session.register(pandas_ops) # adds common Pandas operations
-
-chat = phantom.Chat(session, system="You are an astrophysicist.")
-response = chat.ask("What's the median orbital eccentricity of confirmed exoplanets discovered by Kepler?")
-```
-
 ## Customization
 
-### Operations and Inspectors
+### Custom Operations
 
-**Operations** are Python functions decorated with `@session.op`. Docstrings become LLM tool descriptions. Parameters typed as `Ref[T]` are resolved automatically (i.e. you can just write normal Python).
+You can add your own operations alongside the built-in ones:
 
 ```python
+session = phantom.Session(allowed_dirs=["./data"])
+
 @session.op
-def merge(left: phantom.Ref[pd.DataFrame], right: phantom.Ref[pd.DataFrame], on: str) -> pd.DataFrame:
-    """Merge two DataFrames on a shared column."""
-    return pd.merge(left, right, on=on)
+def fetch_lightcurve(target: str) -> dict:
+    """Fetch a lightcurve from the MAST archive."""
+    return mast_api.query(target)
 ```
 
-**Inspectors** define what the LLM sees when it peeks at data. 
+### Inspectors
+
+**Inspectors** define what the LLM sees when it peeks at data.
 
 ```python
+import pandas as pd
+
 @session.inspector(pd.DataFrame)
 def inspect_dataframe(df: pd.DataFrame) -> dict:
     return {
@@ -184,7 +165,7 @@ Phantom is designed to be hackable. If you need full control over the LLM intera
 ```python
 tools = session.get_tools()
 
-messages = [{"role": "user", "content": "Analyze sales by region"}]
+messages = [{"role": "user", "content": "Find the closest hazardous asteroids"}]
 
 response = client.chat.completions.create(
     model="gpt-4o",
@@ -203,11 +184,26 @@ for tool_call in response.choices[0].message.tool_calls:
 ### Session Features
 
 ```python
-session = phantom.Session()
+session = phantom.Session(
+    allowed_dirs=["./data"],   # restrict file access
+    max_file_bytes=10_000_000, # limit file sizes
+    output_format="dicts",     # default export format
+)
 
 # Lazy evaluation
-ref = session.ref("load_csv", path="data.csv")
+ref = session.ref("read_csv", path="neo_survey.csv")
 result = session.resolve(ref)
+
+# SQL queries with refs as virtual tables
+neo = session.ref("read_csv", path="neo_survey.csv")
+missions = session.ref("read_csv", path="missions.csv")
+targeted = session.ref(
+    "query",
+    sql="SELECT n.name, m.mission FROM neo n "
+        "JOIN missions m ON n.name = m.target "
+        "WHERE n.hazardous",
+    refs={"neo": neo, "missions": missions},
+)
 
 # Async resolution with parallel execution
 result = await session.aresolve(ref, parallel=True)

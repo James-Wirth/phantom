@@ -252,5 +252,5 @@ class LRUCache:
                 return value.nbytes
 
             return sys.getsizeof(value)
-        except Exception:
+        except (TypeError, AttributeError, ValueError, OSError):
             return 0

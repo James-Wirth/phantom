@@ -33,7 +33,15 @@ class Ref(Generic[T]):
     @property
     def parents(self) -> tuple[Ref[Any], ...]:
         """Extract parent refs from args (for lineage tracking)."""
-        return tuple(v for v in self.args.values() if isinstance(v, Ref))
+        result: list[Ref[Any]] = []
+        for v in self.args.values():
+            if isinstance(v, Ref):
+                result.append(v)
+            elif isinstance(v, dict):
+                for dv in v.values():
+                    if isinstance(dv, Ref):
+                        result.append(dv)
+        return tuple(result)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for LLM consumption."""
@@ -77,6 +85,12 @@ class Ref(Generic[T]):
         for k, v in self.args.items():
             if isinstance(v, Ref):
                 parts.append(f"{k}={v.id}")
+            elif isinstance(v, dict):
+                inner = ", ".join(
+                    f"{dk}: {dv.id}" if isinstance(dv, Ref) else f"{dk}: {dv!r}"
+                    for dk, dv in v.items()
+                )
+                parts.append(f"{k}={{{inner}}}")
             else:
                 parts.append(f"{k}={v!r}")
         return ", ".join(parts)

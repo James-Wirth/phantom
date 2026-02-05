@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import Executor
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, TypeVar, get_origin
 
 from ._cache import LRUCache
@@ -71,6 +72,10 @@ class Session:
         cache_max_bytes: int | None = None,
         policy: SecurityPolicy | None = _UNSET,  # type: ignore[assignment]
         secure: bool = True,
+        allowed_dirs: list[str | Path] | None = None,
+        allowed_paths: list[str | Path] | None = None,
+        max_file_bytes: int = 50_000_000,
+        output_format: str = "relation",
     ):
         """
         Create a new isolated session.
@@ -86,6 +91,12 @@ class Session:
             secure: When ``True`` (the default), default security policies
                 from registered ``OperationSet`` instances are auto-applied.
                 Set to ``False`` to skip all automatic policy merging.
+            allowed_dirs: Directories the built-in data operations may read
+                from.  When ``None``, no directory restriction is applied.
+            allowed_paths: Specific file paths the data operations may access.
+            max_file_bytes: Maximum file size for read operations (default 50 MB).
+            output_format: Default output format for the export operation.
+                Options: "relation", "pandas", "polars", "arrow", "tuples", "dicts".
         """
         self.id = session_id or f"session_{uuid.uuid4().hex[:8]}"
         self._refs: dict[str, Ref[Any]] = {}
@@ -112,6 +123,17 @@ class Session:
             "on_error": [],
             "on_progress": [],
         }
+
+        # Built-in data engine
+        from ._data import _DataEngine
+
+        self._data_engine = _DataEngine(
+            allowed_dirs=allowed_dirs,
+            allowed_paths=allowed_paths,
+            max_file_bytes=max_file_bytes,
+            output_format=output_format,
+        )
+        self._data_engine.register_into(self)
 
     def __enter__(self) -> Session:
         """Enter context manager."""
@@ -372,6 +394,14 @@ class Session:
                     self._validate_type(cached_value, expected_type, value, key, chain)
 
                     resolved_args[key] = cached_value
+                elif isinstance(value, dict):
+                    resolved_dict: dict[str, Any] = {}
+                    for dk, dv in value.items():
+                        if isinstance(dv, Ref):
+                            resolved_dict[dk] = self._value_cache.get(dv.id)
+                        else:
+                            resolved_dict[dk] = dv
+                    resolved_args[key] = resolved_dict
                 else:
                     resolved_args[key] = value
 
@@ -537,6 +567,15 @@ class Session:
                 self._validate_type(cached_value, expected_type, value, key, chain)
 
                 resolved_args[key] = cached_value
+            elif isinstance(value, dict):
+                resolved_dict: dict[str, Any] = {}
+                for dk, dv in value.items():
+                    if isinstance(dv, Ref):
+                        with self._optional_lock(use_lock):
+                            resolved_dict[dk] = self._value_cache.get(dv.id)
+                    else:
+                        resolved_dict[dk] = dv
+                resolved_args[key] = resolved_dict
             else:
                 resolved_args[key] = value
 
@@ -602,6 +641,8 @@ class Session:
         self._refs.clear()
         self._value_cache.clear()
         self._reverse_deps.clear()
+        if hasattr(self, "_data_engine") and self._data_engine is not None:
+            self._data_engine.close()
 
     def on(self, event: str) -> Callable[[Callable[..., None]], Callable[..., None]]:
         """
@@ -837,6 +878,14 @@ class Session:
         for key, value in arguments.items():
             if isinstance(value, str) and value.startswith("@"):
                 resolved_args[key] = self.get(value)
+            elif isinstance(value, dict):
+                resolved_dict: dict[str, Any] = {}
+                for dk, dv in value.items():
+                    if isinstance(dv, str) and dv.startswith("@"):
+                        resolved_dict[dk] = self.get(dv)
+                    else:
+                        resolved_dict[dk] = dv
+                resolved_args[key] = resolved_dict
             elif coerce_types and isinstance(value, str) and key in params:
                 resolved_args[key] = self._coerce_type(value, params[key])
             else:
@@ -904,7 +953,10 @@ class Session:
         import json
 
         if isinstance(arguments, str):
-            arguments = json.loads(arguments)
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON in tool arguments: {e}") from e
 
         try:
             if name == "peek":

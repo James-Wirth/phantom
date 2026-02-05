@@ -9,6 +9,7 @@ description = "Semantic references for LLM pipelines"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
+dependencies = ["duckdb>=0.9"]
 authors = [
     { name = "James Wirth" }
 ]
@@ -30,8 +31,7 @@ openai = ["openai>=1.0"]
 google = ["google-genai>=1.0"]
 pandas = ["pandas>=2.0"]
 polars = ["polars>=0.20"]
-duckdb = ["duckdb>=0.9"]
-all = ["anthropic>=0.40", "openai>=1.0", "google-genai>=1.0", "pandas>=2.0", "polars>=0.20", "duckdb>=0.9"]
+all = ["anthropic>=0.40", "openai>=1.0", "google-genai>=1.0", "pandas>=2.0", "polars>=0.20"]
 dev = [
     "pytest>=8.0",
     "mypy>=1.8",
@@ -49,3 +49,4 @@ warn_unused_configs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "strict"

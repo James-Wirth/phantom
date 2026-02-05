@@ -46,9 +46,17 @@ class ToolResult:
     @classmethod
     def from_ref(cls, ref: Ref[Any]) -> ToolResult:
         """Create result for a lazy operation that created a ref."""
-        serialized_args = {}
+        serialized_args: dict[str, Any] = {}
         for k, v in ref.args.items():
-            serialized_args[k] = v.id if isinstance(v, Ref) else v
+            if isinstance(v, Ref):
+                serialized_args[k] = v.id
+            elif isinstance(v, dict):
+                serialized_args[k] = {
+                    dk: dv.id if isinstance(dv, Ref) else dv
+                    for dk, dv in v.items()
+                }
+            else:
+                serialized_args[k] = v
 
         return cls(
             kind="ref",
