@@ -122,8 +122,8 @@ in the working directory.
 for file access — never use raw SQL to read from file paths.
 - Do not attempt to access system files, environment variables, credentials, \
 or private keys.
-- Do not construct SQL containing COPY, INSTALL, LOAD, ATTACH, or other \
-administrative statements.
+- Only SELECT and WITH statements are allowed in SQL. Any other statement \
+(COPY, INSERT, DROP, ATTACH, INSTALL, LOAD, etc.) will be rejected.
 
 ### Available Operations
 {operations}"""
