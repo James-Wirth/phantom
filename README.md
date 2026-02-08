@@ -30,6 +30,7 @@ chat = phantom.Chat(
     model="claude-sonnet-4-20250514",
     system="You are an astrophysicist. Data files are in ./data/.",
 )
+
 response = chat.ask(
     "Which habitable-zone exoplanets are within 50 light-years of Earth, "
     "and what kind of stars do they orbit?"
