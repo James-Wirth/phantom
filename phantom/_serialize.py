@@ -24,27 +24,12 @@ def serialize_graph(root: Ref[Any]) -> dict[str, Any]:
     def collect(ref: Ref[Any]) -> None:
         if ref.id in refs:
             return
-
-        serialized_args: dict[str, Any] = {}
-        for key, value in ref.args.items():
-            if isinstance(value, Ref):
-                serialized_args[key] = value.id
-                collect(value)
-            elif isinstance(value, dict):
-                serialized_args[key] = {
-                    dk: dv.id if isinstance(dv, Ref) else dv
-                    for dk, dv in value.items()
-                }
-                for dv in value.values():
-                    if isinstance(dv, Ref):
-                        collect(dv)
-            else:
-                serialized_args[key] = value
-
+        for parent in ref.parents:
+            collect(parent)
         refs[ref.id] = {
             "id": ref.id,
             "op": ref.op,
-            "args": serialized_args,
+            "args": ref.serialized_args(),
             "meta": ref.meta,
         }
 

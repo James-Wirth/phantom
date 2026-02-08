@@ -95,6 +95,14 @@ class Ref(Generic[T]):
                 parts.append(f"{k}={v!r}")
         return ", ".join(parts)
 
+    def serialized_args(self) -> dict[str, Any]:
+        """Return args with Ref values replaced by their IDs.
+
+        Recurses one level into dict values, matching the dict-of-refs
+        pattern used by the ``query`` operation.
+        """
+        return _serialize_ref_args(self.args)
+
     def __repr__(self) -> str:
         return self.id
 
@@ -105,3 +113,22 @@ class Ref(Generic[T]):
         if isinstance(other, Ref):
             return self.id == other.id
         return False
+
+
+def _serialize_ref_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Replace Ref values with their IDs in an args dict.
+
+    Recurses one level into dict values for the dict-of-refs pattern.
+    """
+    result: dict[str, Any] = {}
+    for k, v in args.items():
+        if isinstance(v, Ref):
+            result[k] = v.id
+        elif isinstance(v, dict):
+            result[k] = {
+                dk: dv.id if isinstance(dv, Ref) else dv
+                for dk, dv in v.items()
+            }
+        else:
+            result[k] = v
+    return result
