@@ -3,11 +3,57 @@
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Callable
 from types import UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from ._ref import Ref
+
+
+def _parse_docstring_args(docstring: str | None) -> dict[str, str]:
+    """Extract parameter descriptions from a Google-style Args section."""
+    if not docstring:
+        return {}
+
+    lines = docstring.split("\n")
+    block_lines: list[str] = []
+    args_indent: int | None = None
+    for line in lines:
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if stripped == "Args:" or stripped.startswith("Args:\n"):
+            args_indent = indent
+            continue
+        if args_indent is None:
+            continue
+        if stripped and indent <= args_indent:
+            break
+        block_lines.append(line)
+
+    if not block_lines:
+        return {}
+
+    param_re = r"^\s+(\w+)(?:\s*\([^)]*\))?\s*:\s*(.*)"
+    params: dict[str, str] = {}
+    current_name: str | None = None
+    current_lines: list[str] = []
+
+    for line in block_lines:
+        param_match = re.match(param_re, line)
+        if param_match:
+            if current_name is not None:
+                params[current_name] = " ".join(current_lines).strip()
+            current_name = param_match.group(1)
+            first = param_match.group(2).strip()
+            current_lines = [first] if first else []
+        elif current_name is not None and line.strip():
+            current_lines.append(line.strip())
+
+    if current_name is not None:
+        params[current_name] = " ".join(current_lines).strip()
+
+    return params
 
 
 def _is_ref_type(type_hint: Any) -> bool:
@@ -78,10 +124,13 @@ def get_operation_signature_from_func(
     """
     sig = inspect.signature(func)
     hints = get_type_hints(func) if hasattr(func, "__annotations__") else {}
+    arg_docs = _parse_docstring_args(func.__doc__)
 
     params = {}
     for param_name, param in sig.parameters.items():
         param_info: dict[str, Any] = {}
+        if param_name in arg_docs:
+            param_info["doc"] = arg_docs[param_name]
         if param_name in hints:
             type_hint = hints[param_name]
             param_info["type_hint"] = type_hint
@@ -165,17 +214,19 @@ def get_tools(
 
         for param_name, param_info in sig["params"].items():
             is_ref = param_info.get("is_ref", False)
+            doc = param_info.get("doc", "")
             if is_ref:
+                ref_desc = doc or "A ref ID from a prior op"
                 prop: dict[str, Any] = {
                     "type": "string",
-                    "description": "A ref ID (e.g., '@abc123') from a prior op",
+                    "description": f"{ref_desc} (e.g., '@abc123')",
                     "pattern": "^@[a-f0-9]+$",
                 }
             else:
                 type_name = param_info.get("type", "str")
                 prop = {
                     "type": _python_type_to_json_schema(type_name),
-                    "description": f"The {param_name} parameter",
+                    "description": doc or f"The {param_name} parameter",
                 }
                 if "dict" in type_name:
                     prop["type"] = "object"
