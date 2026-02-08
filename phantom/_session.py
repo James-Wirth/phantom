@@ -351,6 +351,7 @@ class Session:
         """Resolve using session's persistent cache."""
         order = topological_order(ref)
         self._build_reverse_deps(order)
+        order_idx = self._build_order_index(order)
         total = len(order)
         completed = 0
 
@@ -360,66 +361,32 @@ class Session:
                 continue
 
             self._emit("on_progress", completed=completed, total=total, current=node)
+            chain = self._chain_up_to(order, order_idx, node)
 
             try:
                 op_func = self._get_operation(node.op)
                 sig = self._get_operation_signature(node.op)
             except KeyError as e:
-                chain = [r.id for r in order[: order.index(node) + 1]]
                 raise ResolutionError(
-                    f"Unknown operation: {node.op}",
-                    node,
-                    chain,
-                    e,
+                    f"Unknown operation: {node.op}", node, chain, e
                 ) from e
 
-            params = sig.get("params", {})
-
-            resolved_args: dict[str, Any] = {}
-            for key, value in node.args.items():
-                if isinstance(value, Ref):
-                    if value.id not in self._value_cache:
-                        chain = [r.id for r in order[: order.index(node) + 1]]
-                        raise ResolutionError(
-                            f"Cache miss for ref {value.id} - dependency not "
-                            "resolved (possible bug in topological ordering)",
-                            node,
-                            chain,
-                        )
-                    cached_value = self._value_cache.get(value.id)
-
-                    param_info = params.get(key, {})
-                    expected_type = param_info.get("ref_inner_type")
-                    chain = [r.id for r in order[: order.index(node) + 1]]
-                    self._validate_type(cached_value, expected_type, value, key, chain)
-
-                    resolved_args[key] = cached_value
-                elif isinstance(value, dict):
-                    resolved_dict: dict[str, Any] = {}
-                    for dk, dv in value.items():
-                        if isinstance(dv, Ref):
-                            resolved_dict[dk] = self._value_cache.get(dv.id)
-                        else:
-                            resolved_dict[dk] = dv
-                    resolved_args[key] = resolved_dict
-                else:
-                    resolved_args[key] = value
+            resolved_args = self._resolve_node_args(
+                node, sig.get("params", {}), chain
+            )
 
             self._emit("before_resolve", ref=node, args=resolved_args)
 
-            if self._policy is not None:
-                self._policy.check(node.op, resolved_args)
-
             try:
+                if self._policy is not None:
+                    self._policy.check(node.op, resolved_args)
                 result = op_func(**resolved_args)
+            except ResolutionError:
+                raise
             except Exception as e:
                 self._emit("on_error", ref=node, error=e)
-                chain = [r.id for r in order[: order.index(node) + 1]]
                 raise ResolutionError(
-                    f"Operation '{node.op}' failed: {e}",
-                    node,
-                    chain,
-                    e,
+                    f"Operation '{node.op}' failed: {e}", node, chain, e
                 ) from e
 
             self._emit("after_resolve", ref=node, result=result)
@@ -428,6 +395,63 @@ class Session:
 
         self._emit("on_progress", completed=total, total=total, current=None)
         return self._value_cache.get(ref.id)
+
+    @staticmethod
+    def _build_order_index(order: list[Ref[Any]]) -> dict[str, int]:
+        """Precompute ref-id → position for O(1) chain lookups."""
+        return {node.id: i for i, node in enumerate(order)}
+
+    @staticmethod
+    def _chain_up_to(
+        order: list[Ref[Any]], order_idx: dict[str, int], node: Ref[Any]
+    ) -> list[str]:
+        """Return the ref-id chain from the start of *order* through *node*."""
+        return [order[i].id for i in range(order_idx[node.id] + 1)]
+
+    def _resolve_node_args(
+        self,
+        node: Ref[Any],
+        params: dict[str, Any],
+        chain: list[str],
+        *,
+        lock: bool = False,
+    ) -> dict[str, Any]:
+        """Resolve a node's args by replacing Refs with cached values.
+
+        Handles plain values, single Ref args, and dict-of-refs.
+        When *lock* is True, cache reads are protected by
+        ``_thread_lock`` (needed for parallel async execution with
+        an executor).
+        """
+        resolved: dict[str, Any] = {}
+        for key, value in node.args.items():
+            if isinstance(value, Ref):
+                with self._optional_lock(lock):
+                    if value.id not in self._value_cache:
+                        raise ResolutionError(
+                            f"Cache miss for ref {value.id} — dependency "
+                            "not resolved",
+                            node,
+                            chain,
+                        )
+                    cached_value = self._value_cache.get(value.id)
+
+                param_info = params.get(key, {})
+                expected_type = param_info.get("ref_inner_type")
+                self._validate_type(cached_value, expected_type, value, key, chain)
+                resolved[key] = cached_value
+            elif isinstance(value, dict):
+                resolved_dict: dict[str, Any] = {}
+                for dk, dv in value.items():
+                    if isinstance(dv, Ref):
+                        with self._optional_lock(lock):
+                            resolved_dict[dk] = self._value_cache.get(dv.id)
+                    else:
+                        resolved_dict[dk] = dv
+                resolved[key] = resolved_dict
+            else:
+                resolved[key] = value
+        return resolved
 
     def _build_reverse_deps(self, order: list[Ref[Any]]) -> None:
         """Build reverse dependency map for cache invalidation."""
@@ -484,6 +508,7 @@ class Session:
         """Async resolve using session's persistent cache."""
         order = topological_order(ref)
         self._build_reverse_deps(order)
+        order_idx = self._build_order_index(order)
         total = len(order)
 
         if parallel:
@@ -502,10 +527,12 @@ class Session:
                 )
 
                 if len(to_execute) == 1:
-                    await self._execute_one_async(to_execute[0], order, executor)
+                    await self._execute_one_async(
+                        to_execute[0], order, order_idx, executor
+                    )
                 else:
                     await asyncio.gather(*[
-                        self._execute_one_async(node, order, executor)
+                        self._execute_one_async(node, order, order_idx, executor)
                         for node in to_execute
                     ])
                 completed += len(to_execute)
@@ -518,7 +545,7 @@ class Session:
                     self._emit(
                         "on_progress", completed=completed, total=total, current=node
                     )
-                    await self._execute_one_async(node, order, executor)
+                    await self._execute_one_async(node, order, order_idx, executor)
                 completed += 1
             self._emit("on_progress", completed=total, total=total, current=None)
 
@@ -528,63 +555,30 @@ class Session:
         self,
         node: Ref[Any],
         order: list[Ref[Any]],
+        order_idx: dict[str, int],
         executor: Executor | None = None,
     ) -> None:
         """Execute a single operation asynchronously (thread-safe with executor)."""
         use_lock = executor is not None
+        chain = self._chain_up_to(order, order_idx, node)
 
         try:
             op_func = self._get_operation(node.op)
             sig = self._get_operation_signature(node.op)
         except KeyError as e:
-            chain = [r.id for r in order[: order.index(node) + 1]]
             raise ResolutionError(
-                f"Unknown operation: {node.op}",
-                node,
-                chain,
-                e,
+                f"Unknown operation: {node.op}", node, chain, e
             ) from e
 
-        params = sig.get("params", {})
-
-        resolved_args: dict[str, Any] = {}
-        for key, value in node.args.items():
-            if isinstance(value, Ref):
-                with self._optional_lock(use_lock):
-                    if value.id not in self._value_cache:
-                        chain = [r.id for r in order[: order.index(node) + 1]]
-                        raise ResolutionError(
-                            f"Cache miss for ref {value.id} - dependency not "
-                            "resolved (possible bug in parallel execution)",
-                            node,
-                            chain,
-                        )
-                    cached_value = self._value_cache.get(value.id)
-
-                param_info = params.get(key, {})
-                expected_type = param_info.get("ref_inner_type")
-                chain = [r.id for r in order[: order.index(node) + 1]]
-                self._validate_type(cached_value, expected_type, value, key, chain)
-
-                resolved_args[key] = cached_value
-            elif isinstance(value, dict):
-                resolved_dict: dict[str, Any] = {}
-                for dk, dv in value.items():
-                    if isinstance(dv, Ref):
-                        with self._optional_lock(use_lock):
-                            resolved_dict[dk] = self._value_cache.get(dv.id)
-                    else:
-                        resolved_dict[dk] = dv
-                resolved_args[key] = resolved_dict
-            else:
-                resolved_args[key] = value
+        resolved_args = self._resolve_node_args(
+            node, sig.get("params", {}), chain, lock=use_lock
+        )
 
         self._emit("before_resolve", ref=node, args=resolved_args)
 
-        if self._policy is not None:
-            self._policy.check(node.op, resolved_args)
-
         try:
+            if self._policy is not None:
+                self._policy.check(node.op, resolved_args)
             if asyncio.iscoroutinefunction(op_func):
                 result = await op_func(**resolved_args)
             else:
@@ -596,12 +590,8 @@ class Session:
             raise
         except Exception as e:
             self._emit("on_error", ref=node, error=e)
-            chain = [r.id for r in order[: order.index(node) + 1]]
             raise ResolutionError(
-                f"Operation '{node.op}' failed: {e}",
-                node,
-                chain,
-                e,
+                f"Operation '{node.op}' failed: {e}", node, chain, e
             ) from e
 
         self._emit("after_resolve", ref=node, result=result)
@@ -931,8 +921,8 @@ class Session:
         Args:
             name: Tool/operation name from LLM
             arguments: Arguments dict or JSON string (may contain "@ref_id" strings)
-            catch_errors: If True, catch ResolutionError and return structured
-                error result instead of raising
+            catch_errors: If True, catch errors and return structured
+                error results instead of raising
 
         Returns:
             ToolResult that can be serialized back to the LLM
@@ -969,6 +959,10 @@ class Session:
         except ResolutionError as e:
             if catch_errors:
                 return ToolResult.from_error(e)
+            raise
+        except Exception as e:
+            if catch_errors:
+                return ToolResult.from_exception(e)
             raise
 
     def save_graph(self, ref: Ref[Any] | str, path: str) -> None:

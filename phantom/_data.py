@@ -7,6 +7,7 @@ created lazily and hardened with sandboxed configuration.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -33,15 +34,51 @@ _BASE_CONFIG: dict[str, str] = {
 }
 
 
-def _quote_identifier(name: str) -> str:
-    """Quote a SQL identifier to prevent injection.
+_COMMENT_RE = re.compile(
+    r"--[^\n]*"        # line comments
+    r"|/\*.*?\*/",     # block comments
+    re.DOTALL,
+)
 
-    Uses double-quoting with proper escaping of embedded double-quotes.
-    Rejects names containing null bytes.
+_ALLOWED_STARTS = frozenset({"select", "with"})
+
+
+def _validate_sql(sql: str) -> None:
+    """Validate that *sql* is a read-only query (SELECT or WITH/CTE).
+
+    Strips comments before checking.  Rejects administrative statements
+    (COPY, INSTALL, LOAD, ATTACH, CREATE, DROP, INSERT, UPDATE, DELETE,
+    SET, PRAGMA, CALL, etc.) which have no place in a sandboxed analytics
+    engine.
+
+    Raises:
+        ValueError: If the statement is not a SELECT or WITH query.
     """
-    if "\x00" in name:
-        raise ValueError(f"Identifier contains null byte: {name!r}")
-    return '"' + name.replace('"', '""') + '"'
+    stripped = _COMMENT_RE.sub(" ", sql).strip()
+    if not stripped:
+        raise ValueError("Empty SQL query")
+    first_word = stripped.split(None, 1)[0].lower().rstrip("(")
+    if first_word not in _ALLOWED_STARTS:
+        raise ValueError(
+            f"Only SELECT and WITH (CTE) queries are allowed, "
+            f"got: {first_word.upper()}"
+        )
+
+
+def _validate_identifier(name: str) -> None:
+    """Validate a SQL identifier for use as a view name.
+
+    Allows only alphanumeric characters and underscores.  This is
+    deliberately restrictive — DuckDB's ``register()`` handles quoting
+    internally, but we reject unusual names to prevent surprises.
+    """
+    if not name:
+        raise ValueError("Identifier must not be empty")
+    if not name.replace("_", "").isalnum():
+        raise ValueError(
+            f"Invalid identifier {name!r}: "
+            "only alphanumeric characters and underscores are allowed"
+        )
 
 
 def _secure_connect(
@@ -79,6 +116,7 @@ def _secure_connect(
 def _data_policy(
     allowed_dirs: list[str | Path] | None = None,
     *,
+    allowed_paths: list[str | Path] | None = None,
     deny_patterns: list[str] | None = None,
     max_file_bytes: int = 50_000_000,
 ) -> SecurityPolicy:
@@ -86,7 +124,9 @@ def _data_policy(
     if deny_patterns is None:
         deny_patterns = list(DEFAULT_DENY_PATTERNS)
 
-    path_guard = PathGuard(allowed_dirs, deny_patterns=deny_patterns)
+    path_guard = PathGuard(
+        allowed_dirs, deny_patterns=deny_patterns, allowed_paths=allowed_paths
+    )
     policy = SecurityPolicy()
     policy.bind(path_guard, ops=_IO_OPS, args=["path"])
     policy.bind(
@@ -157,17 +197,20 @@ class _DataEngine:
     def _query(
         self, sql: str, refs: dict[str, Any] | None = None
     ) -> DuckDBPyRelation:
-        """Execute a SQL query, optionally binding ref data as virtual tables.
+        """Execute a read-only SQL query, optionally binding ref data as virtual tables.
+
+        Only ``SELECT`` and ``WITH`` (CTE) statements are permitted.
 
         Args:
-            sql: SQL query string.
+            sql: SQL query string (must be a SELECT or WITH query).
             refs: Optional mapping of table names to data (DataFrames,
                   DuckDB relations, etc.).  Each entry is registered as a
                   temporary view before the query runs.
         """
+        _validate_sql(sql)
         if refs:
             for view_name, data in refs.items():
-                _quote_identifier(view_name)
+                _validate_identifier(view_name)
                 self.conn.register(view_name, data)
         return self.conn.query(sql)
 
@@ -226,6 +269,7 @@ class _DataEngine:
 
         policy = _data_policy(
             self._allowed_dirs,
+            allowed_paths=self._allowed_paths,
             max_file_bytes=self._max_file_bytes,
         )
         if session._auto_merge:

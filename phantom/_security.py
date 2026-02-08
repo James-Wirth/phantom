@@ -86,31 +86,41 @@ class Guard(ABC):
 
 
 class PathGuard(Guard):
-    """Restrict file paths to allowed directories.
+    """Restrict file paths to allowed directories and/or specific files.
 
     Resolves paths to absolute form (following symlinks) and verifies they
-    fall within at least one of the *allowed_dirs*. Optionally rejects paths
-    matching *deny_patterns* (fnmatch globs checked against all path
-    components, not just the filename).
+    fall within at least one of the *allowed_dirs* or match one of the
+    *allowed_paths* exactly.  Optionally rejects paths matching
+    *deny_patterns* (fnmatch globs checked against all path components,
+    not just the filename).
 
     Args:
-        allowed_dirs: Directories the operation may access. When ``None``,
-            no directory restriction is applied (deny patterns and other
-            guards still run).
+        allowed_dirs: Directories the operation may access.
+        allowed_paths: Specific file paths the operation may access.
         deny_patterns: Glob patterns checked against every path component
             (e.g. ``["*.env", ".git"]`` blocks both ``prod.env`` and
             ``.git/config``).
+
+    When neither *allowed_dirs* nor *allowed_paths* is provided, no
+    location restriction is applied (deny patterns and other guards
+    still run).
     """
 
     def __init__(
         self,
         allowed_dirs: list[str | Path] | None = None,
         deny_patterns: list[str] | None = None,
+        *,
+        allowed_paths: list[str | Path] | None = None,
     ) -> None:
-        self._allowed = (
+        self._allowed_dirs = (
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else []
         )
+        self._allowed_paths = (
+            {Path(p).resolve() for p in allowed_paths} if allowed_paths else set()
+        )
         self._deny = deny_patterns or []
+        self._has_restrictions = bool(self._allowed_dirs or self._allowed_paths)
 
     def check(self, value: Any, *, op_name: str, arg_name: str) -> None:
         try:
@@ -133,19 +143,25 @@ class PathGuard(Guard):
                         guard_name="PathGuard",
                     )
 
-        if not self._allowed:
+        if not self._has_restrictions:
             return
 
-        for allowed in self._allowed:
+        if resolved in self._allowed_paths:
+            return
+
+        for allowed in self._allowed_dirs:
             try:
                 resolved.relative_to(allowed)
                 return
             except ValueError:
                 continue
 
-        dirs = ", ".join(str(d) for d in self._allowed)
+        locations = ", ".join(
+            [str(d) for d in self._allowed_dirs]
+            + [str(p) for p in sorted(self._allowed_paths)]
+        )
         raise SecurityError(
-            f"Path '{value}' is outside allowed directories: [{dirs}]",
+            f"Path '{value}' is outside allowed locations: [{locations}]",
             op_name=op_name,
             arg_name=arg_name,
             guard_name="PathGuard",

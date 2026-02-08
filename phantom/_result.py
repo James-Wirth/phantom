@@ -46,21 +46,9 @@ class ToolResult:
     @classmethod
     def from_ref(cls, ref: Ref[Any]) -> ToolResult:
         """Create result for a lazy operation that created a ref."""
-        serialized_args: dict[str, Any] = {}
-        for k, v in ref.args.items():
-            if isinstance(v, Ref):
-                serialized_args[k] = v.id
-            elif isinstance(v, dict):
-                serialized_args[k] = {
-                    dk: dv.id if isinstance(dv, Ref) else dv
-                    for dk, dv in v.items()
-                }
-            else:
-                serialized_args[k] = v
-
         return cls(
             kind="ref",
-            data={"ref": ref.id, "op": ref.op, "args": serialized_args},
+            data={"ref": ref.id, "op": ref.op, "args": ref.serialized_args()},
             ref=ref,
         )
 
@@ -89,4 +77,17 @@ class ToolResult:
                 "chain": error.chain,
             },
             ref=error.ref,
+        )
+
+    @classmethod
+    def from_exception(cls, error: Exception) -> ToolResult:
+        """Create result for an arbitrary exception (no ref context)."""
+        return cls(
+            kind="error",
+            data={
+                "error": True,
+                "type": type(error).__name__,
+                "message": str(error),
+            },
+            ref=None,
         )

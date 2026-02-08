@@ -280,19 +280,17 @@ class Chat:
         both the Anthropic and OpenAI SDKs handle rate-limit
         retries internally.
         """
-        last_exc: Exception | None = None
-        for attempt in range(1, self._max_retries + 1):
+        attempts = max(1, self._max_retries)
+        for attempt in range(attempts):
             try:
                 return self._provider.call(options)
             except (
                 ConnectionError,
                 TimeoutError,
                 OSError,
-            ) as exc:
-                last_exc = exc
-                if attempt == self._max_retries:
-                    break
-        raise last_exc  # type: ignore[misc]
+            ):
+                if attempt + 1 == attempts:
+                    raise
 
     @property
     def messages(self) -> list[dict[str, Any]]:
