@@ -172,10 +172,17 @@ def get_tools(
                     "pattern": "^@[a-f0-9]+$",
                 }
             else:
+                type_name = param_info.get("type", "str")
                 prop = {
-                    "type": _python_type_to_json_schema(param_info.get("type", "str")),
+                    "type": _python_type_to_json_schema(type_name),
                     "description": f"The {param_name} parameter",
                 }
+                if "dict" in type_name:
+                    prop["type"] = "object"
+                    prop["additionalProperties"] = {
+                        "type": "string",
+                        "pattern": "^@[a-f0-9]+$",
+                    }
             properties[param_name] = prop
 
             if "default" not in param_info:
