@@ -31,33 +31,36 @@ chat = phantom.Chat(
     system="You are an astrophysicist. Data files are in ./data/.",
 )
 response = chat.ask(
-    "Which habitable-zone exoplanets are closest to Earth, "
+    "Which habitable-zone exoplanets are within 50 light-years of Earth, "
     "and what kind of stars do they orbit?"
 )
 ```
 
 ## How It Works
 
-Here's an example trace where Claude analyses two CSV files (20 planets, 18 host stars) to answer: *"Which habitable-zone exoplanets are closest to Earth, and what kind of stars do they orbit?"*
+Given two CSV files and the question *"Which habitable-zone exoplanets are within 50 light-years of Earth, and what kind of stars do they orbit?"*, Phantom produces this tool-call trace:
 
-| Turn | Tool call | Result |
-|:----:|:----------|:-------|
-| 1 | `read_csv("planets.csv")` | `@6a97` |
-| | `read_csv("stars.csv")` | `@cc35` |
-| 2 | `peek(@6a97)` | columns: `[name, host_star, distance_ly, ...]` |
-| | `peek(@cc35)` | columns: `[name, spectral_type, mass_solar, ...]` |
-| 3 | `query("SELECT p.name, p.distance_ly, s.spectral_type, ... FROM planets p JOIN stars s ON p.host_star = s.name WHERE p.in_habitable_zone ORDER BY p.distance_ly", refs={planets: @6a97, stars: @cc35})` | `@f127` |
-| 4 | `export(@f127)` | `[{name: "Proxima Cen b", distance_ly: 4.2, spectral_type: "M"}, ...]` |
+```
+[0] read_csv("exoplanets.csv")            → @6a97
+[1] read_csv("stars.csv")                 → @cc35
+[2] query({p: @6a97})                     → @b1a0  -- habitable-zone filter
+[3] query({s: @cc35})                     → @f4e2  -- nearby stars (< 50 ly)
+[4] query({hz: @b1a0, nb: @f4e2})         → @31d7  -- join + rank by distance
+[5] export(@31d7)                         → [{name: "Proxima Cen b", ...}]
+```
 
+The semantic refs (`@6a97`, `@cc35`, ...) compose into a lazy execution graph:
 
-Refs compose into a **lazy DAG**: shared subgraphs are resolved once and cached. The SQL engine is DuckDB, so JOINs, window functions, CTEs, and aggregations all work out of the box.
+```
+@6a97 → @b1a0 ─┐
+                ├→ @31d7
+@cc35 → @f4e2 ─┘
+```
 
-## Example Output
+Shared subgraphs are resolved once and cached. The query engine is [DuckDB](https://duckdb.org/), so JOINs, window functions, CTEs, and aggregations all work natively.
 
-From the same exoplanet example, Claude's answer (abridged):
+Claude's answer (abridged):
 
-> **Closest habitable-zone exoplanets:**
->
 > | Planet | Distance | Star | Spectral type |
 > |:-------|:---------|:-----|:--------------|
 > | Proxima Cen b | 4.2 ly | Proxima Cen | M-dwarf (3,042 K) |
@@ -108,117 +111,13 @@ chat = phantom.Chat(
 )
 ```
 
-## The Chat Interface
+## Custom Operations
 
-`phantom.Chat` manages the tool-call loop, message history, and ref tracking:
-
-```python
-r1 = chat.ask(
-    "Which habitable-zone exoplanets have a mass under 5 Earth masses?"
-)
-print(r1.text)
-print(r1.tool_calls_made)
-print(r1.usage.total_tokens)
-
-r2 = chat.ask("Of those, which orbit M-dwarf stars?")
-...
-```
-
-## Customization
-
-### Custom Operations
-
-Register domain-specific operations alongside the built-in ones:
+Register domain-specific tools alongside the built-ins — the LLM can call them like any other operation:
 
 ```python
-session = phantom.Session(allowed_dirs=["./data"])
-
 @session.op
 def fetch_lightcurve(target: str) -> dict:
     """Fetch a lightcurve from the MAST archive."""
     return mast_api.query(target)
-
-@session.op
-def blackbody_flux(temperature_k: float, wavelength_nm: float) -> float:
-    """Compute spectral radiance via Planck's law."""
-    ...
-```
-
-### Inspectors
-
-Define what the LLM sees when it peeks at custom data types:
-
-```python
-import pandas as pd
-
-@session.inspector(pd.DataFrame)
-def inspect_dataframe(df: pd.DataFrame) -> dict:
-    return {
-        "shape": list(df.shape),
-        "columns": list(df.columns),
-        "sample": df.head(3).to_dict("records"),
-    }
-```
-
-### Operation Sets
-
-Group related operations into reusable modules:
-
-```python
-from phantom import OperationSet
-
-spectral_ops = OperationSet()
-
-@spectral_ops.op
-def classify_star(temperature_k: float, luminosity_solar: float) -> str:
-    """Classify a star on the Hertzsprung-Russell diagram."""
-    ...
-
-session.register(spectral_ops)
-```
-
-### Manual Tool-Call Loop
-
-For full control over the LLM interaction:
-
-```python
-response = client.chat.completions.create(
-    model="gpt-4o", 
-    tools=session.get_tools(), 
-    messages=[
-        {
-            "role": "user", 
-            "content": "Find the closest habitable-zone planets"
-        }
-    ]
-)
-for tool_call in response.choices[0].message.tool_calls:
-    result = session.handle_tool_call(
-        tool_call.function.name,
-        tool_call.function.arguments,
-    )
-    # result.to_json() → send back to LLM
-```
-
-## Session
-
-```python
-session = phantom.Session(
-    allowed_dirs=["./data"],    # restrict file access
-    max_file_bytes=10_000_000,  # limit individual file sizes
-    output_format="dicts",      # default export format
-)
-```
-
-Resolve asynchronously with parallel execution:
-
-```python
-result = await session.aresolve(habitable, parallel=True)
-```
-
-Save and reload pipelines:
-
-```python
-session.save_graph(habitable, "pipeline.json")
-loaded = session.load_graph("pipeline.json")
 ```
