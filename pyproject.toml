@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "phantom"
 version = "0.1.0"
-description = "Semantic references for LLM pipelines"
+description = "Sandboxed data analysis with LLMs, powered by DuckDB"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ dependencies = ["duckdb>=0.9"]
 authors = [
     { name = "James Wirth" }
 ]
-keywords = ["llm", "references", "semantic", "data", "pipelines"]
+keywords = ["llm", "duckdb", "sql", "sandbox", "data-analysis", "security"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -22,6 +22,8 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering",
     "Typing :: Typed",
 ]
 
@@ -34,6 +36,7 @@ polars = ["polars>=0.20"]
 all = ["anthropic>=0.40", "openai>=1.0", "google-genai>=1.0", "pandas>=2.0", "polars>=0.20"]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.23",
     "mypy>=1.8",
     "pandas>=2.0",
 ]

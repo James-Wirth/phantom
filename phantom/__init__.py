@@ -38,6 +38,13 @@ Example:
     loaded = session.load_graph("pipeline.json")
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("phantom")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"
+
 from ._chat import Chat, ChatResponse
 from ._errors import CycleError, MaxTurnsError, ResolutionError, TypeValidationError
 from ._operation_set import OperationSet
@@ -66,6 +73,7 @@ from ._security import (
 from ._session import Session
 
 __all__ = [
+    "__version__",
     # Core types
     "Ref",
     "ToolResult",
